@@ -768,21 +768,22 @@ def main() -> None:
     )
     simple_mode: bool = ui_mode_label == 'Eenvoudig'
 
-    st.markdown(
-        'Voer een adres per regel in binnen de regio Barreiro.\n\n'
-        '- Het eerste adres wordt gezien als de startlocatie '
-        '(bijvoorbeeld het ziekenhuis).\n'
-        '- Bij een open traject wordt het laatste adres gezien als de '
-        'eindlocatie (bijvoorbeeld jouw huis).\n\n'
-        'De app zal:\n'
-        '1. De adressen geocoderen \n'
-        '2. Ze koppelen aan een eigen mini-wegennet\n'
-        '3. Een afstandsmatrix (km) berekenen binnen het wegennet\n'
-        '4. Een exacte route oplossen met Gurobi (gesloten rondrit of open traject)\n'
-        '5. Links genereren voor Google Maps.\n\n'
-        'In de volledige modus toont de app ook de afstandsmatrix, kaarten en '
-        'een timinglog.',
-    )
+    if not simple_mode:
+        st.markdown(
+            'Voer een adres per regel in binnen de regio Barreiro.\n\n'
+            '- Het eerste adres wordt gezien als de startlocatie '
+            '(bijvoorbeeld het ziekenhuis).\n'
+            '- Bij een open traject wordt het laatste adres gezien als de '
+            'eindlocatie (bijvoorbeeld jouw huis).\n\n'
+            'De app zal:\n'
+            '1. De adressen geocoderen \n'
+            '2. Ze koppelen aan een eigen mini-wegennet\n'
+            '3. Een afstandsmatrix (km) berekenen binnen het wegennet\n'
+            '4. Een exacte route oplossen met Gurobi (gesloten rondrit of open traject)\n'
+            '5. Links genereren voor Google Maps.\n\n'
+            'In de volledige modus toont de app ook de afstandsmatrix, kaarten en '
+            'een timinglog.',
+        )
 
     default_text: str = (
         'Hospital Nossa Senhora do Rosario, Barreiro, Portugal\n'
@@ -923,33 +924,36 @@ def main() -> None:
 
             ordered_addresses: list[str] = [addresses[i] for i in route_indices]
 
-            st.subheader('Geoptimaliseerde bezoekvolgorde (wegennet)')
-            if is_closed:
-                st.write(
-                    'Gesloten rondrit: start en einde bij het eerste adres in deze lijst.',
-                )
-            else:
-                st.write(
-                    'Open traject: start bij het eerste adres en eindig bij het '
-                    'laatste adres in deze lijst.',
-                )
+            if not simple_mode:
+                st.subheader('Geoptimaliseerde bezoekvolgorde (wegennet)')
+                if is_closed:
+                    st.write(
+                        'Gesloten rondrit: start en einde bij het eerste adres in deze lijst.',
+                    )
+                else:
+                    st.write(
+                        'Open traject: start bij het eerste adres en eindig bij het '
+                        'laatste adres in deze lijst.',
+                    )
 
-            for k, addr in enumerate(ordered_addresses, start=1):
-                st.write(f'{k}. {addr}')
+                for k, addr in enumerate(ordered_addresses, start=1):
+                    st.write(f'{k}. {addr}')
 
-            total_km: float = route_length(
-                route_indices,
-                dist_matrix_opt,
-                closed=is_closed,
-            )
-            if is_closed:
-                st.write(
-                    f'Geschatte totale lengte van de gesloten rondrit (km): {total_km:.2f}',
+                total_km: float = route_length(
+                    route_indices,
+                    dist_matrix_opt,
+                    closed=is_closed,
                 )
-            else:
-                st.write(
-                    f'Geschatte totale lengte van het open traject (km): {total_km:.2f}',
-                )
+                if is_closed:
+                    st.write(
+                        'Geschatte totale lengte van de gesloten rondrit (km): '
+                        f'{total_km:.2f}',
+                    )
+                else:
+                    st.write(
+                        'Geschatte totale lengte van het open traject (km): '
+                        f'{total_km:.2f}',
+                    )
 
             # Route maps only in full mode
             if not simple_mode:
@@ -983,15 +987,19 @@ def main() -> None:
                 st.subheader('Route op kaart (geoptimaliseerde volgorde)')
                 st.pyplot(fig_opt)
             else:
-                # Still define opt_coords for navigation links
-                opt_coords = [coords[i] for i in route_indices]
+                # Still define opt_coords for navigation links if needed later
+                opt_coords: list[tuple[float, float]] = [
+                    coords[i] for i in route_indices
+                ]
 
             # Navigation URLs
             maps_url: str = ''
             with timeblock('Building navigation URLs', logs):
                 if is_closed:
                     # Closed: Google Maps route start and end at first address.
-                    maps_addresses: list[str] = ordered_addresses + [ordered_addresses[0]]
+                    maps_addresses: list[str] = (
+                        ordered_addresses + [ordered_addresses[0]]
+                    )
                 else:
                     # Open: start at first, end at last.
                     maps_addresses = ordered_addresses
@@ -1004,8 +1012,6 @@ def main() -> None:
 
             if maps_url:
                 st.subheader('Open in navigatie-app')
-
-            if maps_url:
                 st.link_button('Open in Google Maps', maps_url)
                 if not simple_mode:
                     st.code(maps_url, language='text')
@@ -1019,7 +1025,6 @@ def main() -> None:
                 'De volledige geschiedenis wordt ook weggeschreven naar '
                 'routing_time_log.txt in de app-map.',
             )
-
 
 if __name__ == '__main__':
     main()
