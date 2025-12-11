@@ -1,11 +1,13 @@
 # app.py
-# Barreiro route-optimalisatie (alleen wegennet, sleutelvrije geocodering)
+# Barreiro route-optimalisatie (alleen wegennet, Mapbox-geocodering)
 # Ondersteunt:
 # - Gesloten rondrit: start en eindig op het eerste adres (bijvoorbeeld ziekenhuis)
 # - Open traject: start op het eerste adres, eindig op het laatste adres (bijvoorbeeld station)
 # Biedt:
 # - Eenvoudige en volledige interface-modi
 # - Links voor Google Maps
+
+# https://console.cloud.google.com/google/maps-apis/metrics?project=streamlit-logger-475213
 
 import os
 import logging
@@ -14,15 +16,14 @@ import time
 import urllib.parse
 from contextlib import contextmanager
 from pathlib import Path
-import requests
 
+import requests
 import contextily as cx
 import geopandas as gpd
 import gurobipy as gp
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
-import osmnx as ox
 import pandas as pd
 import streamlit as st
 from gurobipy import GRB
@@ -33,6 +34,9 @@ from shapely.geometry import Point
 DATA_DIR: Path = Path('data')
 DRIVE_PREFIX: str = 'drive'
 LOGFILE: str = 'routing_time_log.txt'
+
+# Max toegestane afstand tussen geocodeerde locatie en netwerk-node (in meter)
+MAX_SNAP_DISTANCE_M: float = 5000.0
 
 
 # -----------------------
@@ -73,142 +77,143 @@ def timeblock(label: str, log_list: list[str]) -> None:
 
 
 # -----------------------
-# Geocoding (no key, via OSMnx/Nominatim)
+# Google geocoding (forward and reverse)
 # -----------------------
 
-def get_mapbox_token() -> str:
+def get_google_maps_api_key() -> str:
     """
-    Retrieve the Mapbox access token from Streamlit secrets or
+    Retrieve the Google Maps API key from Streamlit secrets or
     the environment.
 
     Returns:
-        The Mapbox access token string.
+        Google Maps API key string.
 
     Raises:
-        RuntimeError: If no token can be found.
+        RuntimeError: If no key can be found.
     """
-    token: str = ''
+    api_key: str = ''
 
-    # Prefer Streamlit secrets when available
     try:
-        token = st.secrets.get('MAPBOX_TOKEN', '')
+        api_key = st.secrets.get('GOOGLE_MAPS_API_KEY', '')
     except Exception:
-        token = ''
+        api_key = ''
 
-    if not token:
-        token = os.environ.get('MAPBOX_TOKEN', '')
+    if not api_key:
+        api_key = os.environ.get('GOOGLE_MAPS_API_KEY', '')
 
-    if not token:
+    if not api_key:
         raise RuntimeError(
-            'Mapbox access token not found. Set MAPBOX_TOKEN in '
+            'Google Maps API key not found. Set GOOGLE_MAPS_API_KEY in '
             '.streamlit/secrets.toml or as an environment variable.',
         )
 
-    return token
+    return api_key
 
 
-def geocode_address(address: str) -> tuple[float, float]:
+def geocode_address_google(
+    address: str,
+    bbox: tuple[float, float, float, float] | None = None,
+) -> tuple[float, float]:
     """
-    Geocode a human-readable address into latitude and longitude using
-    the Mapbox Geocoding API.
+    Geocode an address into latitude and longitude using the Google
+    Geocoding API.
 
     Args:
-        address: Address string.
+        address:
+            Free text address string.
+        bbox:
+            Optional (min_lon, min_lat, max_lon, max_lat) bounding box
+            in WGS84 that is passed as a bounds parameter to bias the
+            geocoder towards the network region.
 
     Returns:
-        (latitude, longitude) tuple.
+        Tuple (lat, lon) in WGS84.
 
     Raises:
-        RuntimeError: If the geocoding request fails or no result is found.
+        RuntimeError: If the API response status is not OK or if no
+            results are returned.
     """
-    token: str = get_mapbox_token()
+    api_key: str = get_google_maps_api_key()
+    cleaned_address: str = address.strip()
 
-    url: str = (
-        'https://api.mapbox.com/geocoding/v5/mapbox.places/'
-        f'{urllib.parse.quote(address)}.json'
-    )
-
-    params: dict = {
-        'access_token': token,
-        'limit': 1,
-        # Optional: restrict to Portugal to reduce ambiguity
-        'country': 'pt',
+    url: str = 'https://maps.googleapis.com/maps/api/geocode/json'
+    params: dict[str, str] = {
+        'address': cleaned_address,
+        'key': api_key,
     }
+
+    if bbox is not None:
+        min_lon, min_lat, max_lon, max_lat = bbox
+        sw: str = f'{min_lat},{min_lon}'
+        ne: str = f'{max_lat},{max_lon}'
+        params['bounds'] = f'{sw}|{ne}'
 
     try:
         response = requests.get(url, params=params, timeout=10)
     except Exception as exc:
         raise RuntimeError(
-            f"Mapbox geocoding request failed for '{address}': {exc}",
+            f'Google geocoding request failed for "{cleaned_address}": {exc}',
         ) from exc
 
-    if response.status_code != 200:
-        snippet: str = response.text[:200]
-        raise RuntimeError(
-            f"Mapbox geocoding API error {response.status_code} for "
-            f"'{address}': {snippet}",
-        )
-
+    response.raise_for_status()
     data: dict = response.json()
-    features = data.get('features', [])
 
-    if not features:
+    status: str | None = data.get('status')
+    if status != 'OK':
+        error_message: str = data.get('error_message', '')
         raise RuntimeError(
-            f"Mapbox kon het adres niet geocoderen: '{address}'.",
+            f'Google geocoding failed for "{cleaned_address}" '
+            f'with status {status}, error_message: {error_message}',
         )
 
-    # Mapbox center is [lon, lat]
-    lon, lat = features[0].get('center', [None, None])
-
-    if lon is None or lat is None:
+    results: list[dict] = data.get('results', [])
+    if not results:
         raise RuntimeError(
-            f"Mapbox antwoordde zonder geldige coördinaten voor '{address}'.",
+            f'Google geocoding returned no results for "{cleaned_address}".',
         )
 
-    return float(lat), float(lon)
+    location: dict = results[0]['geometry']['location']
+    lat: float = float(location['lat'])
+    lon: float = float(location['lng'])
+
+    formatted_address: str = results[0].get('formatted_address', '')
+    logging.info(
+        'Google geocode "%s" -> lat=%.6f, lon=%.6f, formatted="%s"',
+        cleaned_address,
+        lat,
+        lon,
+        formatted_address,
+    )
+
+    return lat, lon
 
 
-# def geocode_address(address: str) -> tuple[float, float]:
-#     """
-#     Geocode a human-readable address into latitude and longitude using
-#     OSMnx's Nominatim-based geocoder.
-
-#     Args:
-#         address: Address string.
-
-#     Returns:
-#         (latitude, longitude) tuple.
-
-#     Raises:
-#         RuntimeError: If the geocoding fails.
-#     """
-#     try:
-#         lat, lon = ox.geocode(address)
-#     except Exception as exc:
-#         raise RuntimeError(f"Geocoding failed for '{address}': {exc}") from exc
-
-#     return float(lat), float(lon)
-
-
-def geocode_addresses(addresses: list[str]) -> list[tuple[float, float]]:
+def geocode_addresses(
+    addresses: list[str],
+    bbox: tuple[float, float, float, float],
+) -> list[tuple[float, float]]:
     """
-    Geocode a list of addresses.
+    Geocode a list of addresses with Google within a given bounding box.
 
     Args:
-        addresses: List of address strings.
+        addresses:
+            List of address strings.
+        bbox:
+            (min_lon, min_lat, max_lon, max_lat) bounding box of the
+            drive network in WGS84, used to bias the Google geocoding.
 
     Returns:
-        List of (latitude, longitude) tuples, same order as input.
+        List of (latitude, longitude) tuples in the same order as the
+        input addresses.
 
     Raises:
         RuntimeError: If any address cannot be geocoded.
     """
     coords: list[tuple[float, float]] = []
     for addr in addresses:
-        lat, lon = geocode_address(addr)
+        lat, lon = geocode_address_google(addr, bbox)
         coords.append((lat, lon))
     return coords
-
 
 # -----------------------
 # Drive network and distances
@@ -294,17 +299,22 @@ def load_drive_graph() -> tuple[nx.Graph, gpd.GeoDataFrame]:
 def snap_coords_to_nodes(
     coords: list[tuple[float, float]],
     nodes: gpd.GeoDataFrame,
-) -> list[int]:
+) -> tuple[list[int], list[float]]:
     """
     Snap geographic coordinates to the nearest drive network nodes.
 
     Args:
-        coords: List of (latitude, longitude) tuples.
+        coords: List of (latitude, longitude) tuples in WGS84.
         nodes: Nodes GeoDataFrame with projected CRS and geometry,
-            indexed by node_id.
+            indexed by node_id. The CRS is assumed to use meters
+            as the distance unit.
 
     Returns:
-        List of node ids corresponding to the nearest nodes.
+        (snapped_node_ids, distances_m) where:
+            snapped_node_ids is a list of node ids corresponding to the
+                nearest nodes,
+            distances_m is a list of Euclidean distances in meters
+                between each geocoded point and its snapped node.
 
     Raises:
         RuntimeError: If the nodes GeoDataFrame has no CRS.
@@ -319,15 +329,20 @@ def snap_coords_to_nodes(
     points_proj: gpd.GeoSeries = points_wgs84.to_crs(nodes.crs)
 
     snapped_ids: list[int] = []
-    node_geom = nodes['geometry']
+    snapped_distances_m: list[float] = []
+
+    node_geom: gpd.GeoSeries = nodes['geometry']
 
     for point in points_proj:
         distances = node_geom.distance(point)
         idx = distances.idxmin()
         snapped_ids.append(int(idx))
+        snapped_distances_m.append(float(distances.loc[idx]))
 
     logging.info('Snapped node ids: %s', snapped_ids)
-    return snapped_ids
+    logging.info('Snapping distances (m): %s', snapped_distances_m)
+
+    return snapped_ids, snapped_distances_m
 
 
 def build_distance_matrix_networkx(
@@ -433,7 +448,7 @@ def solve_tsp_or_path_gurobi(
         closed: If True, solve a closed tour. If False, solve an open path.
         start_idx: Index of the starting node in the distance matrix.
         end_idx: Index of the ending node in the distance matrix, required for
-            closed=False.
+            closed is False.
         trace: Enable Gurobi solver output if True.
 
     Returns:
@@ -467,14 +482,12 @@ def solve_tsp_or_path_gurobi(
         GRB.MINIMIZE,
     )
 
-    # Degree constraints: standard TSP (degree 2 at every node)
     for i in nodes:
         model.addConstr(
             gp.quicksum(x[min(i, j), max(i, j)] for j in nodes if j != i) == 2,
             name=f'deg_{i}',
         )
 
-    # For open path, enforce that edge (start_idx, end_idx) is in the tour.
     if not closed and end_idx is not None:
         i_forced = min(start_idx, end_idx)
         j_forced = max(start_idx, end_idx)
@@ -560,7 +573,6 @@ def solve_tsp_or_path_gurobi(
         adjacency[i].append(j)
         adjacency[j].append(i)
 
-    # Closed tour: build a cycle starting at start_idx
     if closed:
         tour: list[int] = [start_idx]
         current: int = start_idx
@@ -585,7 +597,6 @@ def solve_tsp_or_path_gurobi(
 
         return tour
 
-    # Open path: remove edge (start_idx, end_idx) and traverse from start_idx
     if end_idx is None:
         raise RuntimeError('end_idx is required for open path reconstruction.')
 
@@ -757,6 +768,16 @@ def build_google_maps_url_from_addresses(addresses: list[str]) -> str:
 def main() -> None:
     """
     Run the Streamlit app for drive-only route optimization in Barreiro.
+
+    Simple mode:
+        - Uses Mapbox geocoder.
+        - Computes the full solution but only shows the "Open in Google Maps"
+          button (plus any error messages).
+
+    Full mode:
+        - Shows explanatory text.
+        - Shows geocoding and snapping diagnostics.
+        - Shows distance matrix, route information, maps, and a timing log.
     """
     logging.info('main() called')
     st.title('Bezoekroute-optimalisatie in de regio Barreiro')
@@ -777,13 +798,14 @@ def main() -> None:
             '- Bij een open traject wordt het laatste adres gezien als de '
             'eindlocatie (bijvoorbeeld jouw huis).\n\n'
             'De app zal:\n'
-            '1. De adressen geocoderen \n'
+            '1. De adressen geocoderen\n'
             '2. Ze koppelen aan een eigen mini-wegennet\n'
             '3. Een afstandsmatrix (km) berekenen binnen het wegennet\n'
-            '4. Een exacte route oplossen met Gurobi (gesloten rondrit of open traject)\n'
-            '5. Links genereren voor Google Maps.\n\n'
-            'In de volledige modus toont de app ook de afstandsmatrix, kaarten en '
-            'een timinglog.',
+            '4. Een exacte route oplossen met Gurobi '
+            '(gesloten rondrit of open traject)\n'
+            '5. Een link genereren voor Google Maps.\n\n'
+            'In de volledige modus toont de app ook de afstandsmatrix, '
+            'kaarten en een timinglog.',
         )
 
     default_text: str = (
@@ -829,32 +851,152 @@ def main() -> None:
                 )
                 return
 
-            # Geocoding
+            # Load drive network first, to obtain bounding box for geocoding
             try:
-                with st.spinner('Adressen geocoderen...'):
+                with st.spinner('Wegennetwerk laden...'):
+                    with timeblock('Loading drive graph', logs):
+                        graph, nodes = load_drive_graph()
+            except Exception as exc:
+                st.error(f'Fout tijdens het laden van het netwerk: {exc}')
+                return
+
+            # Compute network bounding box in WGS84 for Mapbox geocoding
+            with timeblock('Computing network bounding box (WGS84)', logs):
+                nodes_wgs84 = nodes.to_crs('EPSG:4326')
+                min_lon, min_lat, max_lon, max_lat = nodes_wgs84.total_bounds
+                network_bbox: tuple[float, float, float, float] = (
+                    float(min_lon),
+                    float(min_lat),
+                    float(max_lon),
+                    float(max_lat),
+                )
+
+                center_lon: float = 0.5 * (min_lon + max_lon)
+                center_lat: float = 0.5 * (min_lat + max_lat)
+
+                # Shrink bbox around the network center to focus on Barreiro
+                # 0.07 degrees latitude ~ 7.8 km, 0.10 degrees longitude ~ 8–9 km here.
+                half_width_lon: float = 0.10
+                half_height_lat: float = 0.07
+
+                geo_min_lon: float = max(min_lon, center_lon - half_width_lon)
+                geo_max_lon: float = min(max_lon, center_lon + half_width_lon)
+                geo_min_lat: float = max(min_lat, center_lat - half_height_lat)
+                geo_max_lat: float = min(max_lat, center_lat + half_height_lat)
+
+                geocode_bbox: tuple[float, float, float, float] = (
+                    geo_min_lon,
+                    geo_min_lat,
+                    geo_max_lon,
+                    geo_max_lat,
+                )
+
+                logging.info(
+                    'Network bbox WGS84: min_lon=%.6f, min_lat=%.6f, '
+                    'max_lon=%.6f, max_lat=%.6f',
+                    min_lon,
+                    min_lat,
+                    max_lon,
+                    max_lat,
+                )
+                logging.info(
+                    'Geocode bbox WGS84: min_lon=%.6f, min_lat=%.6f, '
+                    'max_lon=%.6f, max_lat=%.6f',
+                    geo_min_lon,
+                    geo_min_lat,
+                    geo_max_lon,
+                    geo_max_lat,
+                )
+
+            # Geocoding (Mapbox, restricted to network area)
+            try:
+                with st.spinner('Adressen geocoderen binnen het netwerkgebied...'):
                     with timeblock('Geocoding addresses', logs):
                         coords: list[tuple[float, float]] = geocode_addresses(
                             addresses,
+                            geocode_bbox,
                         )
             except Exception as exc:
                 st.error(f'Fout tijdens het geocoderen: {exc}')
                 return
 
-            # Drive network load and snapping
+            # Snap geocoded points to drive network nodes
             try:
-                with st.spinner('Wegennetwerk laden en adressen koppelen...'):
-                    with timeblock('Loading drive graph', logs):
-                        graph, nodes = load_drive_graph()
+                with st.spinner('Adressen koppelen aan het wegennet...'):
                     with timeblock('Snapping coordinates to drive nodes', logs):
-                        snapped_node_ids: list[int] = snap_coords_to_nodes(
+                        snapped_node_ids, snapped_distances_m = snap_coords_to_nodes(
                             coords,
                             nodes,
                         )
             except Exception as exc:
-                st.error(f'Fout tijdens het laden van het netwerk of het koppelen: {exc}')
+                st.error(
+                    'Fout tijdens het koppelen van adressen aan het wegennet: '
+                    f'{exc}',
+                )
                 return
 
-            # Distance matrix
+            # Diagnostics in full mode
+            if not simple_mode:
+                st.subheader('Geocoding en snapping (diagnostiek)')
+
+                # Detect duplicate geocoded coordinates
+                coord_groups: dict[tuple[float, float], list[int]] = {}
+                for i, (lat, lon) in enumerate(coords):
+                    key = (round(lat, 6), round(lon, 6))
+                    coord_groups.setdefault(key, []).append(i)
+
+                duplicates: list[list[int]] = [
+                    idxs for idxs in coord_groups.values() if len(idxs) > 1
+                ]
+
+                if duplicates:
+                    st.warning(
+                        'Let op: meerdere adressen zijn naar exact dezelfde '
+                        'coördinaat gegeocoderd. Dit kan duiden op onduidelijke '
+                        'of niet-herkende adressen door de geocoder.'
+                    )
+
+                # Show diagnostics per address (no reverse geocoding)
+                for addr, (lat, lon), node_id, dist_m in zip(
+                    addresses,
+                    coords,
+                    snapped_node_ids,
+                    snapped_distances_m,
+                ):
+                    gmaps_link: str = (
+                        'https://www.google.com/maps/search/'
+                        f'?api=1&query={lat},{lon}'
+                    )
+                    st.markdown(
+                        f'**Invoeradres:** {addr}  \n'
+                        f'↳ Geocode: lat `{lat:.6f}`, lon `{lon:.6f}`  \n'
+                        f'↳ Dichtstbijzijnde netwerk-node: `{node_id}`  \n'
+                        f'↳ Euclidische afstand naar node: `{dist_m:.1f}` meter  \n'
+                        f'[Bekijk punt in Google Maps]({gmaps_link})'
+                    )
+            # Quality check on snapping distances (all modes)
+            offending_indices: list[int] = [
+                i
+                for i, d in enumerate(snapped_distances_m)
+                if d > MAX_SNAP_DISTANCE_M
+            ]
+            if offending_indices:
+                st.error(
+                    'Minstens een adres ligt te ver van het beschikbare '
+                    'wegennet (meer dan '
+                    f'{MAX_SNAP_DISTANCE_M / 1000.0:.1f} km). Pas de adressen '
+                    'aan of controleer de geocoding.',
+                )
+                if not simple_mode:
+                    st.write('Probleemadressen:')
+                    for i in offending_indices:
+                        st.write(
+                            f'- {addresses[i]} (afstand tot netwerk: '
+                            f'{snapped_distances_m[i] / 1000.0:.2f} km)',
+                        )
+                return
+
+            # Distance matrix on the network
             try:
                 with st.spinner('Afstandsmatrix in het wegennet berekenen...'):
                     with timeblock('Computing NetworkX distance matrix', logs):
@@ -865,7 +1007,10 @@ def main() -> None:
                             )
                         )
             except Exception as exc:
-                st.error(f'Fout tijdens het berekenen van de netwerkafstanden: {exc}')
+                st.error(
+                    'Fout tijdens het berekenen van de netwerkafstanden: '
+                    f'{exc}',
+                )
                 return
 
             if not simple_mode:
@@ -879,7 +1024,22 @@ def main() -> None:
                         f'{i + 1}: {addr}' for i, addr in enumerate(addresses)
                     ],
                 )
-                st.dataframe(df_dist.style.format('{:.3f}'), width='stretch')
+                st.dataframe(
+                    df_dist.style.format('{:.3f}'),
+                    width='stretch',
+                )
+
+                C_raw = np.array(dist_matrix_raw, dtype=float)
+                n_raw = C_raw.shape[0]
+                offdiag_mask = ~np.eye(n_raw, dtype=bool)
+                finite_vals = C_raw[offdiag_mask][np.isfinite(C_raw[offdiag_mask])]
+                if finite_vals.size > 0:
+                    min_dist = float(finite_vals.min())
+                    max_dist = float(finite_vals.max())
+                    st.caption(
+                        'Netwerkafstanden tussen punten: '
+                        f'minimaal {min_dist:.3f} km, maximaal {max_dist:.3f} km.',
+                    )
 
             # Connectivity check
             try:
@@ -889,7 +1049,7 @@ def main() -> None:
                 st.error(f'Niet-bereikbare locaties gedetecteerd: {exc}')
                 return
 
-            # Prepare matrix for optimization (symmetrize and zero diagonal)
+            # Prepare matrix for optimization
             with timeblock('Preparing distance matrix for optimization', logs):
                 C = np.array(dist_matrix_raw, dtype=float)
                 C = 0.5 * (C + C.T)
@@ -929,12 +1089,13 @@ def main() -> None:
                 st.subheader('Geoptimaliseerde bezoekvolgorde (wegennet)')
                 if is_closed:
                     st.write(
-                        'Gesloten rondrit: start en einde bij het eerste adres in deze lijst.',
+                        'Gesloten rondrit: start en einde bij het eerste adres '
+                        'in deze lijst.',
                     )
                 else:
                     st.write(
-                        'Open traject: start bij het eerste adres en eindig bij het '
-                        'laatste adres in deze lijst.',
+                        'Open traject: start bij het eerste adres en eindig bij '
+                        'het laatste adres in deze lijst.',
                     )
 
                 for k, addr in enumerate(ordered_addresses, start=1):
@@ -956,7 +1117,7 @@ def main() -> None:
                         f'{total_km:.2f}',
                     )
 
-            # Route maps only in full mode
+            # Route maps in full mode
             if not simple_mode:
                 with timeblock('Building route maps', logs):
                     orig_coords: list[tuple[float, float]] = coords[:]
@@ -987,28 +1148,24 @@ def main() -> None:
 
                 st.subheader('Route op kaart (geoptimaliseerde volgorde)')
                 st.pyplot(fig_opt)
-            else:
-                # Still define opt_coords for navigation links if needed later
-                opt_coords: list[tuple[float, float]] = [
-                    coords[i] for i in route_indices
-                ]
 
-            # Navigation URLs
+            # Build Google Maps URL
             maps_url: str = ''
             with timeblock('Building navigation URLs', logs):
                 if is_closed:
-                    # Closed: Google Maps route start and end at first address.
                     maps_addresses: list[str] = (
                         ordered_addresses + [ordered_addresses[0]]
                     )
                 else:
-                    # Open: start at first, end at last.
                     maps_addresses = ordered_addresses
 
                 try:
                     maps_url = build_google_maps_url_from_addresses(maps_addresses)
                 except Exception as exc:
-                    st.error(f'Fout bij het opbouwen van de Google Maps URL: {exc}')
+                    st.error(
+                        'Fout bij het opbouwen van de Google Maps URL: '
+                        f'{exc}',
+                    )
                     maps_url = ''
 
             if maps_url:
@@ -1027,6 +1184,7 @@ def main() -> None:
                 'De volledige geschiedenis wordt ook weggeschreven naar '
                 'routing_time_log.txt in de app-map.',
             )
+
 
 if __name__ == '__main__':
     main()
