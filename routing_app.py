@@ -814,7 +814,8 @@ def main() -> None:
         'Estacao Barreiro A, Barreiro, Portugal\n'
         'Pastelaria Prestigio, Barreiro, Portugal\n'
         'Parque Catarina Eufemia, Barreiro, Portugal\n'
-        'Avenida Escola dos Fuzileiros Navais, Barreiro, Portugal'
+        'Avenida Escola dos Fuzileiros Navais, Barreiro, Portugal\n'
+        'União das freguesias de Palhais e Coina, Palhais, Portugal\n'
     )
 
     addresses_input: str = st.text_area(
