@@ -13,6 +13,7 @@ import time
 import urllib.parse
 from contextlib import contextmanager
 from pathlib import Path
+import requests
 
 import contextily as cx
 import geopandas as gpd
