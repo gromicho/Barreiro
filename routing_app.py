@@ -1,5 +1,5 @@
 # app.py
-# Barreiro route-optimalisatie (alleen wegennet, Mapbox-geocodering)
+# Barreiro route-optimalisatie (alleen wegennet, Google-geocodering)
 # Ondersteunt:
 # - Gesloten rondrit: start en eindig op het eerste adres (bijvoorbeeld ziekenhuis)
 # - Open traject: start op het eerste adres, eindig op het laatste adres (bijvoorbeeld station)
@@ -770,7 +770,7 @@ def main() -> None:
     Run the Streamlit app for drive-only route optimization in Barreiro.
 
     Simple mode:
-        - Uses Mapbox geocoder.
+        - Uses Google geocoder.
         - Computes the full solution but only shows the "Open in Google Maps"
           button (plus any error messages).
 
@@ -860,7 +860,7 @@ def main() -> None:
                 st.error(f'Fout tijdens het laden van het netwerk: {exc}')
                 return
 
-            # Compute network bounding box in WGS84 for Mapbox geocoding
+            # Compute network bounding box in WGS84 for Google geocoding
             with timeblock('Computing network bounding box (WGS84)', logs):
                 nodes_wgs84 = nodes.to_crs('EPSG:4326')
                 min_lon, min_lat, max_lon, max_lat = nodes_wgs84.total_bounds
@@ -908,7 +908,7 @@ def main() -> None:
                     geo_max_lat,
                 )
 
-            # Geocoding (Mapbox, restricted to network area)
+            # Geocoding (Google, restricted to network area)
             try:
                 with st.spinner('Adressen geocoderen binnen het netwerkgebied...'):
                     with timeblock('Geocoding addresses', logs):
