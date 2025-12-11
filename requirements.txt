@@ -1,0 +1,12 @@
+streamlit
+geopandas
+networkx
+osmnx
+contextily
+matplotlib
+numpy
+pandas
+requests
+pyproj
+shapely
+gurobipy
