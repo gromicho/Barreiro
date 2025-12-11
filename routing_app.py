@@ -5,7 +5,7 @@
 # - Open path: start at first address, end at last address (for example, station)
 # Provides:
 # - Simple and full interface modes
-# - Links for Google Maps and Waze
+# - Links for Google Maps
 
 import logging
 import math
@@ -656,24 +656,6 @@ def build_google_maps_url_from_addresses(addresses: list[str]) -> str:
     return url
 
 
-def build_waze_url_from_address(address: str) -> str:
-    """
-    Build a Waze URL that opens Waze with a destination set to the given address.
-
-    On mobile devices with Waze installed, this typically opens the app with
-    the route preview to the destination. The user may still need to tap "Go"
-    to start navigation.
-
-    Args:
-        address: Destination address string.
-
-    Returns:
-        Waze deep link URL that searches for and selects the given address.
-    """
-    query: str = urllib.parse.quote(address)
-    return f'https://waze.com/ul?q={query}&navigate=yes'
-
-
 # -----------------------
 # Streamlit UI
 # -----------------------
@@ -704,7 +686,7 @@ def main() -> None:
         '2. Snap them to the OSM drive network\n'
         '3. Compute a drive-network distance matrix (km)\n'
         '4. Solve an exact route with Gurobi (closed tour or open path)\n'
-        '5. Provide links for Google Maps and Waze.\n\n'
+        '5. Provide links for Google Maps.\n\n'
         'In full mode, the app also shows the distance matrix, maps, and '
         'a timing log.',
     )
@@ -912,17 +894,14 @@ def main() -> None:
 
             # Navigation URLs
             maps_url: str = ''
-            waze_url: str = ''
             
             with timeblock('Building navigation URLs', logs):
                 if is_closed:
                     # Closed: Google Maps route start and end at first address.
                     maps_addresses: list[str] = ordered_addresses + [ordered_addresses[0]]
-                    waze_dest_address: str = ordered_addresses[0]
                 else:
                     # Open: start at first, end at last.
                     maps_addresses = ordered_addresses
-                    waze_dest_address = ordered_addresses[-1]
 
                 try:
                     maps_url = build_google_maps_url_from_addresses(maps_addresses)
@@ -930,24 +909,13 @@ def main() -> None:
                     st.error(f'Error while building Google Maps URL: {exc}')
                     maps_url = ''
 
-                try:
-                    waze_url = build_waze_url_from_address(waze_dest_address)
-                except Exception as exc:
-                    st.error(f'Error while building Waze URL: {exc}')
-                    waze_url = ''
-
-            if maps_url or waze_url:
+            if maps_url:
                 st.subheader('Open in navigation app')
 
             if maps_url:
                 st.link_button('Open in Google Maps', maps_url)
                 if not simple_mode:
                     st.code(maps_url, language='text')
-
-            if waze_url:
-                st.link_button('Open in Waze', waze_url)
-                if not simple_mode:
-                    st.code(waze_url, language='text')
 
         if not simple_mode:
             st.subheader('Timing log for this run')
