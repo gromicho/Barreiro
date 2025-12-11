@@ -780,7 +780,12 @@ def main() -> None:
         - Shows distance matrix, route information, maps, and a timing log.
     """
     logging.info('main() called')
-    st.title('Bezoekroute-optimalisatie in de regio Barreiro')
+    st.title(
+        "Bezoekroute-optimalisatie\n"
+        "exclusief voor\n"
+        "Dra. Anneke Joosten\n"
+        "regio Barreiro"
+    )
 
     ui_mode_label: str = st.radio(
         'Interfacemodus',
