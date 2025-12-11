@@ -1011,7 +1011,8 @@ def main() -> None:
                     maps_url = ''
 
             if maps_url:
-                st.subheader('Open in navigatie-app')
+                if not simple_mode:
+                    st.subheader('Open in navigatie-app')
                 st.link_button('Open in Google Maps', maps_url)
                 if not simple_mode:
                     st.code(maps_url, language='text')
