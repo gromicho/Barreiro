@@ -665,7 +665,7 @@ def main() -> None:
     Run the Streamlit app for drive-only route optimization in Barreiro.
     """
     logging.info('main() called')
-    st.title('Barreiro route-optimalisatie (alleen wegennet)')
+    st.title('Bezoekroute-optimalisatie in de regio Barreiro')
 
     ui_mode_label: str = st.radio(
         'Interfacemodus',
@@ -680,10 +680,10 @@ def main() -> None:
         '- Het eerste adres wordt gezien als de startlocatie '
         '(bijvoorbeeld het ziekenhuis).\n'
         '- Bij een open traject wordt het laatste adres gezien als de '
-        'eindlocatie (bijvoorbeeld een station).\n\n'
+        'eindlocatie (bijvoorbeeld jouw huis).\n\n'
         'De app zal:\n'
-        '1. De adressen geocoderen via OSM Nominatim (geen sleutel nodig)\n'
-        '2. Ze koppelen aan het OSM wegennet\n'
+        '1. De adressen geocoderen \n'
+        '2. Ze koppelen aan een eigen mini-wegennet\n'
         '3. Een afstandsmatrix (km) berekenen binnen het wegennet\n'
         '4. Een exacte route oplossen met Gurobi (gesloten rondrit of open traject)\n'
         '5. Links genereren voor Google Maps.\n\n'
@@ -695,6 +695,7 @@ def main() -> None:
         'Hospital Nossa Senhora do Rosario, Barreiro, Portugal\n'
         'Forum Barreiro, Barreiro, Portugal\n'
         'Estacao Barreiro A, Barreiro, Portugal\n'
+        'Pastelaria Prestigio, Barreiro, Portugal\n'
         'Parque Catarina Eufemia, Barreiro, Portugal\n'
         'Avenida Escola dos Fuzileiros Navais, Barreiro, Portugal'
     )
