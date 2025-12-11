@@ -74,10 +74,41 @@ def timeblock(label: str, log_list: list[str]) -> None:
 # Geocoding (no key, via OSMnx/Nominatim)
 # -----------------------
 
+def get_mapbox_token() -> str:
+    """
+    Retrieve the Mapbox access token from Streamlit secrets or
+    the environment.
+
+    Returns:
+        The Mapbox access token string.
+
+    Raises:
+        RuntimeError: If no token can be found.
+    """
+    token: str = ''
+
+    # Prefer Streamlit secrets when available
+    try:
+        token = st.secrets.get('MAPBOX_TOKEN', '')
+    except Exception:
+        token = ''
+
+    if not token:
+        token = os.environ.get('MAPBOX_TOKEN', '')
+
+    if not token:
+        raise RuntimeError(
+            'Mapbox access token not found. Set MAPBOX_TOKEN in '
+            '.streamlit/secrets.toml or as an environment variable.',
+        )
+
+    return token
+
+
 def geocode_address(address: str) -> tuple[float, float]:
     """
     Geocode a human-readable address into latitude and longitude using
-    OSMnx's Nominatim-based geocoder.
+    the Mapbox Geocoding API.
 
     Args:
         address: Address string.
@@ -86,14 +117,75 @@ def geocode_address(address: str) -> tuple[float, float]:
         (latitude, longitude) tuple.
 
     Raises:
-        RuntimeError: If the geocoding fails.
+        RuntimeError: If the geocoding request fails or no result is found.
     """
+    token: str = get_mapbox_token()
+
+    url: str = (
+        'https://api.mapbox.com/geocoding/v5/mapbox.places/'
+        f'{urllib.parse.quote(address)}.json'
+    )
+
+    params: dict = {
+        'access_token': token,
+        'limit': 1,
+        # Optional: restrict to Portugal to reduce ambiguity
+        'country': 'pt',
+    }
+
     try:
-        lat, lon = ox.geocode(address)
+        response = requests.get(url, params=params, timeout=10)
     except Exception as exc:
-        raise RuntimeError(f"Geocoding failed for '{address}': {exc}") from exc
+        raise RuntimeError(
+            f"Mapbox geocoding request failed for '{address}': {exc}",
+        ) from exc
+
+    if response.status_code != 200:
+        snippet: str = response.text[:200]
+        raise RuntimeError(
+            f"Mapbox geocoding API error {response.status_code} for "
+            f"'{address}': {snippet}",
+        )
+
+    data: dict = response.json()
+    features = data.get('features', [])
+
+    if not features:
+        raise RuntimeError(
+            f"Mapbox kon het adres niet geocoderen: '{address}'.",
+        )
+
+    # Mapbox center is [lon, lat]
+    lon, lat = features[0].get('center', [None, None])
+
+    if lon is None or lat is None:
+        raise RuntimeError(
+            f"Mapbox antwoordde zonder geldige coördinaten voor '{address}'.",
+        )
 
     return float(lat), float(lon)
+
+
+# def geocode_address(address: str) -> tuple[float, float]:
+#     """
+#     Geocode a human-readable address into latitude and longitude using
+#     OSMnx's Nominatim-based geocoder.
+
+#     Args:
+#         address: Address string.
+
+#     Returns:
+#         (latitude, longitude) tuple.
+
+#     Raises:
+#         RuntimeError: If the geocoding fails.
+#     """
+#     try:
+#         lat, lon = ox.geocode(address)
+#     except Exception as exc:
+#         raise RuntimeError(f"Geocoding failed for '{address}': {exc}") from exc
+
+#     return float(lat), float(lon)
 
 
 def geocode_addresses(addresses: list[str]) -> list[tuple[float, float]]:
