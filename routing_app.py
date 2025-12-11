@@ -1,11 +1,11 @@
 # app.py
-# Barreiro route optimization (drive network only, key-free geocoding)
-# Supports:
-# - Closed tour: start and end at first address (for example, hospital)
-# - Open path: start at first address, end at last address (for example, station)
-# Provides:
-# - Simple and full interface modes
-# - Links for Google Maps
+# Barreiro route-optimalisatie (alleen wegennet, sleutelvrije geocodering)
+# Ondersteunt:
+# - Gesloten rondrit: start en eindig op het eerste adres (bijvoorbeeld ziekenhuis)
+# - Open traject: start op het eerste adres, eindig op het laatste adres (bijvoorbeeld station)
+# Biedt:
+# - Eenvoudige en volledige interface-modi
+# - Links voor Google Maps
 
 import logging
 import math
@@ -304,9 +304,9 @@ def assert_all_pairs_reachable(distance: list[list[float]]) -> None:
 
     if not np.all(np.isfinite(C[offdiag])):
         raise RuntimeError(
-            'Some locations are not mutually reachable in the drive network. '
-            'Inspect the distance matrix grid above and adjust the addresses '
-            'or the drive network data.',
+            'Sommige locaties zijn onderling niet bereikbaar in het wegennet. '
+            'Bekijk de afstandsmatrix hierboven en pas de adressen of de '
+            'wegennetdata aan.',
         )
 
 
@@ -665,30 +665,30 @@ def main() -> None:
     Run the Streamlit app for drive-only route optimization in Barreiro.
     """
     logging.info('main() called')
-    st.title('Barreiro route optimization (drive network only)')
+    st.title('Barreiro route-optimalisatie (alleen wegennet)')
 
     ui_mode_label: str = st.radio(
-        'Interface mode',
-        ['Simple', 'Full'],
+        'Interfacemodus',
+        ['Eenvoudig', 'Volledig'],
         index=0,
         horizontal=True,
     )
-    simple_mode: bool = ui_mode_label == 'Simple'
+    simple_mode: bool = ui_mode_label == 'Eenvoudig'
 
     st.markdown(
-        'Enter one address per line in the Barreiro area.\n\n'
-        '- The first address is treated as the starting location '
-        '(for example, the hospital).\n'
-        '- For an open path, the last address is treated as the end location '
-        '(for example, a station).\n\n'
-        'The app will:\n'
-        '1. Geocode the addresses via OSM Nominatim (no key required)\n'
-        '2. Snap them to the OSM drive network\n'
-        '3. Compute a drive-network distance matrix (km)\n'
-        '4. Solve an exact route with Gurobi (closed tour or open path)\n'
-        '5. Provide links for Google Maps.\n\n'
-        'In full mode, the app also shows the distance matrix, maps, and '
-        'a timing log.',
+        'Voer een adres per regel in binnen de regio Barreiro.\n\n'
+        '- Het eerste adres wordt gezien als de startlocatie '
+        '(bijvoorbeeld het ziekenhuis).\n'
+        '- Bij een open traject wordt het laatste adres gezien als de '
+        'eindlocatie (bijvoorbeeld een station).\n\n'
+        'De app zal:\n'
+        '1. De adressen geocoderen via OSM Nominatim (geen sleutel nodig)\n'
+        '2. Ze koppelen aan het OSM wegennet\n'
+        '3. Een afstandsmatrix (km) berekenen binnen het wegennet\n'
+        '4. Een exacte route oplossen met Gurobi (gesloten rondrit of open traject)\n'
+        '5. Links genereren voor Google Maps.\n\n'
+        'In de volledige modus toont de app ook de afstandsmatrix, kaarten en '
+        'een timinglog.',
     )
 
     default_text: str = (
@@ -700,22 +700,22 @@ def main() -> None:
     )
 
     addresses_input: str = st.text_area(
-        'Addresses (one per line):',
+        'Adressen (een per regel):',
         value=default_text,
         height=200,
     )
 
     route_type_label: str = st.radio(
-        'Route type',
+        'Routetype',
         [
-            'Closed tour (start and end at first address)',
-            'Open path (start at first address, end at last address)',
+            'Gesloten rondrit (start en einde bij het eerste adres)',
+            'Open traject (start bij het eerste adres, einde bij het laatste adres)',
         ],
         index=0,
     )
-    is_closed: bool = route_type_label.startswith('Closed')
+    is_closed: bool = route_type_label.startswith('Gesloten')
 
-    if st.button('Optimize route'):
+    if st.button('Optimaliseer route'):
         logs: list[str] = []
         with timeblock('Total optimization run', logs):
             addresses: list[str] = [
@@ -723,30 +723,30 @@ def main() -> None:
             ]
 
             if len(addresses) < 2:
-                st.error('Please provide at least two addresses.')
+                st.error('Geef minstens twee adressen op.')
                 return
 
             if not is_closed and len(addresses) < 3:
                 st.error(
-                    'For an open path, please provide at least three addresses '
-                    '(start, at least one intermediate, end).',
+                    'Voor een open traject zijn minstens drie adressen nodig '
+                    '(start, minimaal een tussenadres, einde).',
                 )
                 return
 
             # Geocoding
             try:
-                with st.spinner('Geocoding addresses...'):
+                with st.spinner('Adressen geocoderen...'):
                     with timeblock('Geocoding addresses', logs):
                         coords: list[tuple[float, float]] = geocode_addresses(
                             addresses,
                         )
             except Exception as exc:
-                st.error(f'Error during geocoding: {exc}')
+                st.error(f'Fout tijdens het geocoderen: {exc}')
                 return
 
             # Drive network load and snapping
             try:
-                with st.spinner('Loading drive network and snapping addresses...'):
+                with st.spinner('Wegennetwerk laden en adressen koppelen...'):
                     with timeblock('Loading drive graph', logs):
                         graph, nodes = load_drive_graph()
                     with timeblock('Snapping coordinates to drive nodes', logs):
@@ -755,12 +755,12 @@ def main() -> None:
                             nodes,
                         )
             except Exception as exc:
-                st.error(f'Error during network loading or snapping: {exc}')
+                st.error(f'Fout tijdens het laden van het netwerk of het koppelen: {exc}')
                 return
 
             # Distance matrix
             try:
-                with st.spinner('Computing drive-network distance matrix...'):
+                with st.spinner('Afstandsmatrix in het wegennet berekenen...'):
                     with timeblock('Computing NetworkX distance matrix', logs):
                         dist_matrix_raw: list[list[float]] = (
                             build_distance_matrix_networkx(
@@ -769,11 +769,11 @@ def main() -> None:
                             )
                         )
             except Exception as exc:
-                st.error(f'Error during network distance computation: {exc}')
+                st.error(f'Fout tijdens het berekenen van de netwerkafstanden: {exc}')
                 return
 
             if not simple_mode:
-                st.subheader('Drive-network distance matrix (km)')
+                st.subheader('Afstandsmatrix in het wegennet (km)')
                 df_dist = pd.DataFrame(
                     dist_matrix_raw,
                     columns=[
@@ -790,7 +790,7 @@ def main() -> None:
                 with timeblock('Checking connectivity of snapped nodes', logs):
                     assert_all_pairs_reachable(dist_matrix_raw)
             except Exception as exc:
-                st.error(f'Unreachable locations detected: {exc}')
+                st.error(f'Niet-bereikbare locaties gedetecteerd: {exc}')
                 return
 
             # Prepare matrix for optimization (symmetrize and zero diagonal)
@@ -814,7 +814,7 @@ def main() -> None:
                     if is_closed
                     else 'Route optimization (open path)'
                 )
-                with st.spinner('Solving route optimally with Gurobi...'):
+                with st.spinner('Route optimaal oplossen met Gurobi...'):
                     with timeblock(label, logs):
                         route_indices: list[int] = solve_tsp_or_path_gurobi(
                             dist_matrix_opt,
@@ -824,20 +824,20 @@ def main() -> None:
                             trace=False,
                         )
             except Exception as exc:
-                st.error(f'Error during route optimization: {exc}')
+                st.error(f'Fout tijdens de route-optimalisatie: {exc}')
                 return
 
             ordered_addresses: list[str] = [addresses[i] for i in route_indices]
 
-            st.subheader('Optimized visiting order (drive network)')
+            st.subheader('Geoptimaliseerde bezoekvolgorde (wegennet)')
             if is_closed:
                 st.write(
-                    'Closed tour: start and end at the first address in this list.',
+                    'Gesloten rondrit: start en einde bij het eerste adres in deze lijst.',
                 )
             else:
                 st.write(
-                    'Open path: start at the first address, end at the last address '
-                    'in this list.',
+                    'Open traject: start bij het eerste adres en eindig bij het '
+                    'laatste adres in deze lijst.',
                 )
 
             for k, addr in enumerate(ordered_addresses, start=1):
@@ -850,11 +850,11 @@ def main() -> None:
             )
             if is_closed:
                 st.write(
-                    f'Approximate total closed tour length (km): {total_km:.2f}',
+                    f'Geschatte totale lengte van de gesloten rondrit (km): {total_km:.2f}',
                 )
             else:
                 st.write(
-                    f'Approximate total open path length (km): {total_km:.2f}',
+                    f'Geschatte totale lengte van het open traject (km): {total_km:.2f}',
                 )
 
             # Route maps only in full mode
@@ -874,19 +874,19 @@ def main() -> None:
 
                     fig_orig = make_matplotlib_route_map(
                         coords=orig_coords_plot,
-                        title='Original order (drive network)',
+                        title='Oorspronkelijke volgorde (wegennet)',
                         color='blue',
                     )
                     fig_opt = make_matplotlib_route_map(
                         coords=opt_coords_plot,
-                        title='Optimized order (drive network)',
+                        title='Geoptimaliseerde volgorde (wegennet)',
                         color='red',
                     )
 
-                st.subheader('Route on map (original order)')
+                st.subheader('Route op kaart (oorspronkelijke volgorde)')
                 st.pyplot(fig_orig)
 
-                st.subheader('Route on map (optimized order)')
+                st.subheader('Route op kaart (geoptimaliseerde volgorde)')
                 st.pyplot(fig_opt)
             else:
                 # Still define opt_coords for navigation links
@@ -894,7 +894,6 @@ def main() -> None:
 
             # Navigation URLs
             maps_url: str = ''
-            
             with timeblock('Building navigation URLs', logs):
                 if is_closed:
                     # Closed: Google Maps route start and end at first address.
@@ -906,11 +905,11 @@ def main() -> None:
                 try:
                     maps_url = build_google_maps_url_from_addresses(maps_addresses)
                 except Exception as exc:
-                    st.error(f'Error while building Google Maps URL: {exc}')
+                    st.error(f'Fout bij het opbouwen van de Google Maps URL: {exc}')
                     maps_url = ''
 
             if maps_url:
-                st.subheader('Open in navigation app')
+                st.subheader('Open in navigatie-app')
 
             if maps_url:
                 st.link_button('Open in Google Maps', maps_url)
@@ -918,13 +917,13 @@ def main() -> None:
                     st.code(maps_url, language='text')
 
         if not simple_mode:
-            st.subheader('Timing log for this run')
-            with st.expander('Show detailed timing'):
+            st.subheader('Timinglog voor deze run')
+            with st.expander('Toon gedetailleerde timing'):
                 for line in logs:
                     st.write(line)
             st.caption(
-                'Full history is also written to routing_time_log.txt '
-                'in the app directory.',
+                'De volledige geschiedenis wordt ook weggeschreven naar '
+                'routing_time_log.txt in de app-map.',
             )
 
 
