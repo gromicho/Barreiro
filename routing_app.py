@@ -7,6 +7,7 @@
 # - Eenvoudige en volledige interface-modi
 # - Links voor Google Maps
 
+import os
 import logging
 import math
 import time
