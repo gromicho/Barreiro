@@ -12,6 +12,7 @@
 import os
 import logging
 import math
+import heapq
 import time
 import urllib.parse
 from contextlib import contextmanager
@@ -187,6 +188,24 @@ def geocode_address_google(
 
     return lat, lon
 
+@st.cache_data(show_spinner=False)
+def geocode_address_google_cached(
+    address: str,
+    bbox: tuple[float, float, float, float] | None,
+) -> tuple[float, float]:
+    """
+    Cached wrapper around Google geocoding for a single address.
+
+    Cache key depends on:
+    - address string
+    - bounding box
+
+    Returns:
+        (lat, lon) in WGS84.
+    """
+    bbox_key = tuple(round(v, 3) for v in bbox)
+    return geocode_address_google(address, bbox_key)
+
 
 def geocode_addresses(
     addresses: list[str],
@@ -211,7 +230,7 @@ def geocode_addresses(
     """
     coords: list[tuple[float, float]] = []
     for addr in addresses:
-        lat, lon = geocode_address_google(addr, bbox)
+        lat, lon = geocode_address_google_cached(addr, bbox)
         coords.append((lat, lon))
     return coords
 
@@ -668,10 +687,135 @@ def route_length(
 # Matplotlib route maps
 # -----------------------
 
+# -----------------------
+# Matplotlib route maps
+# -----------------------
+
+def _transform_xy_lists(
+    xs: list[float],
+    ys: list[float],
+    src_crs: str,
+    dst_crs: str = 'EPSG:3857',
+) -> tuple[list[float], list[float]]:
+    """
+    Transform coordinate lists between CRSs.
+
+    Args:
+        xs: X coordinates in src_crs.
+        ys: Y coordinates in src_crs.
+        src_crs: Source CRS string.
+        dst_crs: Destination CRS string.
+
+    Returns:
+        (xs_t, ys_t) transformed.
+    """
+    transformer = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
+    xs_t: list[float] = []
+    ys_t: list[float] = []
+    for x, y in zip(xs, ys):
+        x2, y2 = transformer.transform(x, y)
+        xs_t.append(float(x2))
+        ys_t.append(float(y2))
+    return xs_t, ys_t
+
+
+def route_nodes_to_edge_geometry_xy_3857(
+    route_node_ids: list[int],
+    graph: nx.Graph,
+    nodes: gpd.GeoDataFrame,
+) -> tuple[list[float], list[float]]:
+    """
+    Build a road-following polyline by concatenating OSM edge geometries along
+    shortest paths between consecutive route nodes.
+
+    Falls back to node-to-node segments if an edge geometry is missing.
+
+    Args:
+        route_node_ids: Snapped node ids in visiting order (include return-to-start
+            yourself if you want a closed loop drawn).
+        graph: Drive graph with edge weights 'length' and optionally 'geometry'.
+        nodes: Nodes GeoDataFrame indexed by node_id with 'x' and 'y' in nodes.crs.
+
+    Returns:
+        (xs_3857, ys_3857) polyline coordinates in EPSG:3857.
+    """
+    if nodes.crs is None:
+        raise RuntimeError('Nodes GeoDataFrame has no CRS.')
+
+    if len(route_node_ids) < 2:
+        return [], []
+
+    xs_path: list[float] = []
+    ys_path: list[float] = []
+
+    for a, b in zip(route_node_ids[:-1], route_node_ids[1:]):
+        path_nodes: list[int] = nx.shortest_path(graph, int(a), int(b), weight='length')
+
+        for u, v in zip(path_nodes[:-1], path_nodes[1:]):
+            edge_data = graph.get_edge_data(int(u), int(v)) or {}
+            geom = edge_data.get('geometry')
+
+            if geom is not None and hasattr(geom, 'coords'):
+                coords = list(geom.coords)
+                x_list = [float(x) for x, _y in coords]
+                y_list = [float(y) for _x, y in coords]
+            else:
+                row_u = nodes.loc[int(u)]
+                row_v = nodes.loc[int(v)]
+                x_list = [float(row_u['x']), float(row_v['x'])]
+                y_list = [float(row_u['y']), float(row_v['y'])]
+
+            if xs_path and x_list and y_list:
+                x_list = x_list[1:]
+                y_list = y_list[1:]
+
+            xs_path.extend(x_list)
+            ys_path.extend(y_list)
+
+    xs_3857, ys_3857 = _transform_xy_lists(
+        xs=xs_path,
+        ys=ys_path,
+        src_crs=str(nodes.crs),
+        dst_crs='EPSG:3857',
+    )
+    return xs_3857, ys_3857
+
+
+def snapped_nodes_xy_3857(
+    snapped_node_ids: list[int],
+    nodes: gpd.GeoDataFrame,
+) -> tuple[list[float], list[float]]:
+    """
+    Convert snapped node ids to EPSG:3857 x/y lists for plotting.
+
+    Args:
+        snapped_node_ids: List of snapped OSM node ids in the same order as inputs.
+        nodes: Nodes GeoDataFrame indexed by node_id with 'x' and 'y' in nodes.crs.
+
+    Returns:
+        (xs_3857, ys_3857) lists aligned with snapped_node_ids.
+    """
+    if nodes.crs is None:
+        raise RuntimeError('Nodes GeoDataFrame has no CRS.')
+
+    xs: list[float] = []
+    ys: list[float] = []
+    for nid in snapped_node_ids:
+        row = nodes.loc[int(nid)]
+        xs.append(float(row['x']))
+        ys.append(float(row['y']))
+
+    return _transform_xy_lists(xs, ys, src_crs=str(nodes.crs), dst_crs='EPSG:3857')
+
+
 def make_matplotlib_route_map(
     coords: list[tuple[float, float]],
     title: str,
     color: str,
+    road_xs: list[float] | None = None,
+    road_ys: list[float] | None = None,
+    snapped_xs: list[float] | None = None,
+    snapped_ys: list[float] | None = None,
 ) -> plt.Figure:
     """
     Build a Matplotlib figure showing a route on top of web map tiles.
@@ -679,7 +823,11 @@ def make_matplotlib_route_map(
     Args:
         coords: List of (lat, lon) in visiting order.
         title: Plot title.
-        color: Line and marker color.
+        color: Line and marker color for the geocoded points polyline.
+        road_xs: Optional road-following polyline x coordinates in EPSG:3857.
+        road_ys: Optional road-following polyline y coordinates in EPSG:3857.
+        snapped_xs: Optional snapped-node x coordinates in EPSG:3857, aligned with coords.
+        snapped_ys: Optional snapped-node y coordinates in EPSG:3857, aligned with coords.
 
     Returns:
         Matplotlib Figure instance.
@@ -690,14 +838,24 @@ def make_matplotlib_route_map(
     ys: list[float] = []
     for lat, lon in coords:
         x, y = transformer.transform(lon, lat)
-        xs.append(x)
-        ys.append(y)
+        xs.append(float(x))
+        ys.append(float(y))
 
     fig, ax = plt.subplots(figsize=(8, 8))
     ax.set_title(title)
 
     ax.plot(xs, ys, '-o', markersize=6, linewidth=2, color=color)
 
+    if road_xs and road_ys:
+        ax.plot(road_xs, road_ys, linewidth=3)
+
+    # Snapped nodes: show as 'x' markers with same numbering as geocoded points
+    if snapped_xs and snapped_ys and len(snapped_xs) == len(xs):
+        ax.scatter(snapped_xs, snapped_ys, marker='x', s=60)
+        for i, (x_s, y_s) in enumerate(zip(snapped_xs, snapped_ys), start=1):
+            ax.text(x_s, y_s, str(i), fontsize=10, color='black')
+
+    # Number the geocoded points
     for i, (x, y) in enumerate(zip(xs, ys), start=1):
         ax.text(x, y, str(i), fontsize=10, color='black')
 
@@ -725,7 +883,6 @@ def make_matplotlib_route_map(
     ax.axis('off')
 
     return fig
-
 
 # -----------------------
 # Navigation URLs
@@ -761,6 +918,24 @@ def build_google_maps_url_from_addresses(addresses: list[str]) -> str:
     return url
 
 
+def route_length_from_addresses_in_input_order(
+    dist_matrix_opt: list[list[float]],
+    is_closed: bool,
+) -> float:
+    """
+    Compute the total distance for the original input order (0, 1, 2, ..., n-1).
+
+    Args:
+        dist_matrix_opt: Symmetric distance matrix in km (diagonal 0.0).
+        is_closed: If True, add the leg from last back to first.
+
+    Returns:
+        Total distance in km.
+    """
+    n: int = len(dist_matrix_opt)
+    route_indices: list[int] = list(range(n))
+    return route_length(route_indices, dist_matrix_opt, closed=is_closed)
+
 # -----------------------
 # Streamlit UI
 # -----------------------
@@ -794,6 +969,17 @@ def main() -> None:
         horizontal=True,
     )
     simple_mode: bool = ui_mode_label == 'Eenvoudig'
+
+    show_road_overlay: bool = False
+    if not simple_mode:
+        show_road_overlay_label: str = st.radio(
+            'Route over het wegennet tekenen',
+            ['Uit', 'Aan'],
+            index=0,
+            horizontal=True,
+            key='show_road_overlay_label',
+        )
+        show_road_overlay = show_road_overlay_label == 'Aan'
 
     if not simple_mode:
         st.markdown(
@@ -1023,15 +1209,14 @@ def main() -> None:
                 st.subheader('Afstandsmatrix in het wegennet (km)')
                 df_dist = pd.DataFrame(
                     dist_matrix_raw,
-                    columns=[
-                        f'{i + 1}: {addr}' for i, addr in enumerate(addresses)
-                    ],
+                    columns=[str(i + 1) for i in range(len(addresses))],
                     index=[
-                        f'{i + 1}: {addr}' for i, addr in enumerate(addresses)
+                        f'{i + 1}: {",".join(addr.split(",")[:-1])}'
+                        for i, addr in enumerate(addresses)
                     ],
                 )
                 st.dataframe(
-                    df_dist.style.format('{:.3f}'),
+                    df_dist.style.format('{:.1f}'),
                     width='stretch',
                 )
 
@@ -1127,9 +1312,7 @@ def main() -> None:
             if not simple_mode:
                 with timeblock('Building route maps', logs):
                     orig_coords: list[tuple[float, float]] = coords[:]
-                    opt_coords: list[tuple[float, float]] = [
-                        coords[i] for i in route_indices
-                    ]
+                    opt_coords: list[tuple[float, float]] = [coords[i] for i in route_indices]
 
                     if is_closed:
                         orig_coords_plot = orig_coords + orig_coords[:1]
@@ -1138,22 +1321,93 @@ def main() -> None:
                         orig_coords_plot = orig_coords
                         opt_coords_plot = opt_coords
 
+                    road_xs_orig: list[float] = []
+                    road_ys_orig: list[float] = []
+                    road_xs_opt: list[float] = []
+                    road_ys_opt: list[float] = []
+
+                    snapped_xs_orig: list[float] = []
+                    snapped_ys_orig: list[float] = []
+                    snapped_xs_opt: list[float] = []
+                    snapped_ys_opt: list[float] = []
+
+                    if show_road_overlay:
+                        orig_route_node_ids: list[int] = snapped_node_ids[:]
+                        opt_route_node_ids: list[int] = [snapped_node_ids[i] for i in route_indices]
+
+                        if is_closed:
+                            orig_route_node_ids_plot = orig_route_node_ids + orig_route_node_ids[:1]
+                            opt_route_node_ids_plot = opt_route_node_ids + opt_route_node_ids[:1]
+                        else:
+                            orig_route_node_ids_plot = orig_route_node_ids
+                            opt_route_node_ids_plot = opt_route_node_ids
+
+                        road_xs_orig, road_ys_orig = route_nodes_to_edge_geometry_xy_3857(
+                            route_node_ids=orig_route_node_ids_plot,
+                            graph=graph,
+                            nodes=nodes,
+                        )
+                        road_xs_opt, road_ys_opt = route_nodes_to_edge_geometry_xy_3857(
+                            route_node_ids=opt_route_node_ids_plot,
+                            graph=graph,
+                            nodes=nodes,
+                        )
+
+                        snapped_xs_orig, snapped_ys_orig = snapped_nodes_xy_3857(
+                            snapped_node_ids=orig_route_node_ids_plot,
+                            nodes=nodes,
+                        )
+                        snapped_xs_opt, snapped_ys_opt = snapped_nodes_xy_3857(
+                            snapped_node_ids=opt_route_node_ids_plot,
+                            nodes=nodes,
+                        )
+
                     fig_orig = make_matplotlib_route_map(
                         coords=orig_coords_plot,
                         title='Oorspronkelijke volgorde (wegennet)',
                         color='blue',
+                        road_xs=road_xs_orig if show_road_overlay else None,
+                        road_ys=road_ys_orig if show_road_overlay else None,
+                        snapped_xs=snapped_xs_orig if show_road_overlay else None,
+                        snapped_ys=snapped_ys_orig if show_road_overlay else None,
                     )
                     fig_opt = make_matplotlib_route_map(
                         coords=opt_coords_plot,
                         title='Geoptimaliseerde volgorde (wegennet)',
                         color='red',
+                        road_xs=road_xs_opt if show_road_overlay else None,
+                        road_ys=road_ys_opt if show_road_overlay else None,
+                        snapped_xs=snapped_xs_opt if show_road_overlay else None,
+                        snapped_ys=snapped_ys_opt if show_road_overlay else None,
                     )
 
-                st.subheader('Route op kaart (oorspronkelijke volgorde)')
-                st.pyplot(fig_orig)
+                total_km_original: float = route_length_from_addresses_in_input_order(
+                    dist_matrix_opt,
+                    is_closed=is_closed,
+                )
+                total_km_optimized: float = route_length(
+                    route_indices,
+                    dist_matrix_opt,
+                    closed=is_closed,
+                )
 
-                st.subheader('Route op kaart (geoptimaliseerde volgorde)')
-                st.pyplot(fig_opt)
+                st.subheader('Routes op kaart (vergelijking)')
+
+                col_left, col_right = st.columns(2)
+
+                with col_left:
+                    st.markdown(
+                        '**Oorspronkelijke volgorde**  \n'
+                        f'Totale afstand (km): **{total_km_original:.2f}**',
+                    )
+                    st.pyplot(fig_orig)
+
+                with col_right:
+                    st.markdown(
+                        '**Geoptimaliseerde volgorde**  \n'
+                        f'Totale afstand (km): **{total_km_optimized:.2f}**',
+                    )
+                    st.pyplot(fig_opt)
 
             # Build Google Maps URL
             maps_url: str = ''
