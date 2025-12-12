@@ -1,0 +1,40 @@
+# ======================
+# Secrets (NEVER commit)
+# ======================
+.streamlit/secrets.toml
+
+# ======================
+# Streamlit / library caches
+# ======================
+.streamlit/cache/
+.cache/
+.osmnx/
+
+# ======================
+# Python artifacts
+# ======================
+__pycache__/
+*.pyc
+*.pyo
+
+# ======================
+# Virtual environments
+# ======================
+.venv/
+venv/
+
+# ======================
+# OS junk
+# ======================
+.DS_Store
+Thumbs.db
+
+# ======================
+# own cache
+# ======================
+cache/
+
+# ======================
+# own logging
+# ======================
+routing_time_log.txt

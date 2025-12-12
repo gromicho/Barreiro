@@ -820,6 +820,9 @@ def make_matplotlib_route_map(
     """
     Build a Matplotlib figure showing a route on top of web map tiles.
 
+    Uses a square plot extent to avoid "skewed" maps when points are nearly
+    collinear (very small y-range compared to x-range).
+
     Args:
         coords: List of (lat, lon) in visiting order.
         title: Plot title.
@@ -849,13 +852,9 @@ def make_matplotlib_route_map(
     if road_xs and road_ys:
         ax.plot(road_xs, road_ys, linewidth=3)
 
-    # Snapped nodes: show as 'x' markers with same numbering as geocoded points
     if snapped_xs and snapped_ys and len(snapped_xs) == len(xs):
         ax.scatter(snapped_xs, snapped_ys, marker='x', s=60)
-        for i, (x_s, y_s) in enumerate(zip(snapped_xs, snapped_ys), start=1):
-            ax.text(x_s, y_s, str(i), fontsize=10, color='black')
 
-    # Number the geocoded points
     for i, (x, y) in enumerate(zip(xs, ys), start=1):
         ax.text(x, y, str(i), fontsize=10, color='black')
 
@@ -866,19 +865,38 @@ def make_matplotlib_route_map(
         zoom=14,
     )
 
-    x_min = min(xs)
-    x_max = max(xs)
-    y_min = min(ys)
-    y_max = max(ys)
+    # Build bounds from all visible layers
+    all_xs: list[float] = list(xs)
+    all_ys: list[float] = list(ys)
+
+    if road_xs and road_ys:
+        all_xs.extend(float(v) for v in road_xs)
+        all_ys.extend(float(v) for v in road_ys)
+
+    if snapped_xs and snapped_ys:
+        all_xs.extend(float(v) for v in snapped_xs)
+        all_ys.extend(float(v) for v in snapped_ys)
+
+    x_min = min(all_xs)
+    x_max = max(all_xs)
+    y_min = min(all_ys)
+    y_max = max(all_ys)
 
     dx = x_max - x_min
     dy = y_max - y_min
 
-    pad_x = max(dx * 0.1, 50.0)
-    pad_y = max(dy * 0.1, 50.0)
+    # Make the extent square (prevents the "thin strip" effect)
+    cx0 = 0.5 * (x_min + x_max)
+    cy0 = 0.5 * (y_min + y_max)
 
-    ax.set_xlim(x_min - pad_x, x_max + pad_x)
-    ax.set_ylim(y_min - pad_y, y_max + pad_y)
+    half_range = 0.5 * max(dx, dy)
+    half_range = max(half_range, 300.0)  # minimum span in meters for readability
+
+    pad = max(0.10 * (2.0 * half_range), 50.0)
+
+    ax.set_xlim(cx0 - half_range - pad, cx0 + half_range + pad)
+    ax.set_ylim(cy0 - half_range - pad, cy0 + half_range + pad)
+
     ax.set_aspect('equal', adjustable='box')
     ax.axis('off')
 
@@ -1395,14 +1413,14 @@ def main() -> None:
                         '**Oorspronkelijke volgorde**  \n'
                         f'Totale afstand (km): **{total_km_original:.2f}**',
                     )
-                    st.pyplot(fig_orig)
+                    st.pyplot(fig_orig, use_container_width=True)
 
                 with col_right:
                     st.markdown(
                         '**Geoptimaliseerde volgorde**  \n'
                         f'Totale afstand (km): **{total_km_optimized:.2f}**',
                     )
-                    st.pyplot(fig_opt)
+                    st.pyplot(fig_opt, use_container_width=True)
 
             # Build Google Maps URL
             maps_url: str = ''

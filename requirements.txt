@@ -10,3 +10,5 @@ requests
 pyproj
 shapely
 gurobipy
+google-api-python-client
+google-auth
