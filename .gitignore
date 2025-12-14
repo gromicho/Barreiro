@@ -43,9 +43,3 @@ cache/
 # own logging
 # ======================
 routing_time_log.txt
-
-# ======================
-# redundant data
-# ======================
-barreiro_drive_edges.parquet
-barreiro_drive_nodes.parquet
