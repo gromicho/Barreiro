@@ -75,7 +75,7 @@ def main() -> None:
     logging.info('main() called')
 
     language_selector(default_lang=None)
-    st.title(t('app_title'))
+    st.title(t('app_title',name='Dra. Anneke Joosten',city='Barreiro'))
 
     # NOTE: init_state_if_missing/ensure_addresses_loaded/save logic now uses Dropbox store
     # through ui.ui_state (after you update ui.ui_state to import persistence.dropbox_store).

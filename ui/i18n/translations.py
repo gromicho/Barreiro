@@ -9,7 +9,7 @@ SUPPORTED_LANGS: dict[str, str] = {
 TRANSLATIONS: dict[str, dict[str, str]] = {
     'en': {
         'addresses_label': 'Addresses (one per line):',
-        'app_title': 'Visit route optimization\nprivate use only\nCapelle region',
+        'app_title': 'Visit route optimization\nprivate use only by{name}\nin {city} region',
         'cache_cleared_ok': 'Geocoding cache cleared.',
         'clear_cache': 'Clear geocoding cache (Dropbox)',
         'clear_failed': 'Clear failed: {error}',
@@ -81,7 +81,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
     },
     'nl': {
         'addresses_label': 'Adressen (een per regel):',
-        'app_title': 'Bezoekroute-optimalisatie\nexclusief voor\neigen gebruik\nregio Capelle',
+        'app_title': 'Bezoekroute-optimalisatie\nexclusief voor {name}\neigen gebruik\nin regio {city}',
         'cache_cleared_ok': 'Geocoding cache gewist.',
         'clear_cache': 'Wis geocoding cache (Dropbox)',
         'clear_failed': 'Wissen mislukt: {error}',
@@ -153,7 +153,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
     },
     'pt': {
         'addresses_label': 'Endereços (um por linha):',
-        'app_title': 'Otimização de rotas de visitas\nuso privado\nregião de Capelle',
+        'app_title': 'Otimização de rotas de visitas\nuso privado {name}\nregião de {city}',
         'cache_cleared_ok': 'Cache de geocodificação limpa.',
         'clear_cache': 'Limpar cache de geocodificação (Dropbox)',
         'clear_failed': 'Falha ao limpar: {error}',
