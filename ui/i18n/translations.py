@@ -9,7 +9,7 @@ SUPPORTED_LANGS: dict[str, str] = {
 TRANSLATIONS: dict[str, dict[str, str]] = {
     'en': {
         'addresses_label': 'Addresses (one per line):',
-        'app_title': 'Visit route optimization\nprivate use only by{name}\nin {city} region',
+        'app_title': 'Visit route optimization\nprivate use only by {name}\nin {city} region',
         'cache_cleared_ok': 'Geocoding cache cleared.',
         'clear_cache': 'Clear geocoding cache (Dropbox)',
         'clear_failed': 'Clear failed: {error}',
