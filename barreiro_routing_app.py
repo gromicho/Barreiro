@@ -44,10 +44,10 @@ from ui.ui_state import (
 )
 
 # Keep this name; it is now a Dropbox path within the App Folder.
-STORE_FILENAME: str = 'capelle_addresses.json'
+STORE_FILENAME: str = 'barreiro_addresses.json'
 
 DATA_DIR: Path = Path('data')
-DRIVE_PREFIX: str = 'capelle_drive'
+DRIVE_PREFIX: str = 'barreiro_drive'
 LOGFILE: str = 'routing_time_log.txt'
 
 MAX_SNAP_DISTANCE_M: float = 5000.0
