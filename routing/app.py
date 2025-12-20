@@ -177,6 +177,27 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
                         store_filename=cfg.store_filename,
                         throttle_s=0.0,
                     )
+
+                    if not simple_mode:
+                        st.subheader(t('geocoded_title'))
+
+                        coord_groups: dict[tuple[float, float], list[int]] = {}
+                        for i, (lat, lon) in enumerate(coords):
+                            key = (round(lat, 6), round(lon, 6))
+                            coord_groups.setdefault(key, []).append(i)
+
+                        duplicates = [idxs for idxs in coord_groups.values() if len(idxs) > 1]
+                        if duplicates:
+                            st.warning(t('duplicate_coords_warning'))
+
+                        for addr, (lat, lon) in zip(addresses, coords):
+                            gmaps_link = f'https://www.google.com/maps/search/?api=1&query={lat},{lon}'
+                            st.markdown(
+                                f"**{t('input_address')}** {addr}  \n"
+                                f"{t('geocode_line', lat=f'{lat:.6f}', lon=f'{lon:.6f}')}  \n"
+                                f"[{t('view_in_maps')}]({gmaps_link})"
+                            )
+
         except GeocodingError as exc:
             st.error(t('geocode_error', error=str(exc)))
             return
@@ -248,13 +269,82 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
             orig_coords = coords[:]
             opt_coords = [coords[i] for i in route_indices]
 
-            fig_orig = make_matplotlib_route_map(orig_coords, title=t('orig_order'), color='blue')
-            fig_opt = make_matplotlib_route_map(opt_coords, title=t('opt_order'), color='red')
+            orig_node_ids = snapped_node_ids[:]
+            opt_node_ids = [snapped_node_ids[i] for i in route_indices]
+
+            # Close the displayed loop if needed (avoid double-close if already closed).
+            if is_closed:
+                if not (len(orig_coords) >= 2 and orig_coords[0] == orig_coords[-1]):
+                    orig_coords = orig_coords + [orig_coords[0]]
+                if not (len(opt_coords) >= 2 and opt_coords[0] == opt_coords[-1]):
+                    opt_coords = opt_coords + [opt_coords[0]]
+
+                if not (len(orig_node_ids) >= 2 and orig_node_ids[0] == orig_node_ids[-1]):
+                    orig_node_ids = orig_node_ids + [orig_node_ids[0]]
+                if not (len(opt_node_ids) >= 2 and opt_node_ids[0] == opt_node_ids[-1]):
+                    opt_node_ids = opt_node_ids + [opt_node_ids[0]]
+
+            road_xs_orig: list[float] | None = None
+            road_ys_orig: list[float] | None = None
+            road_xs_opt: list[float] | None = None
+            road_ys_opt: list[float] | None = None
+            snapped_xs_orig: list[float] | None = None
+            snapped_ys_orig: list[float] | None = None
+            snapped_xs_opt: list[float] | None = None
+            snapped_ys_opt: list[float] | None = None
+
+            if show_road_overlay:
+                with timeblock('Building road overlay geometries', logs):
+                    road_xs_orig, road_ys_orig = route_nodes_to_edge_geometry_xy_3857(
+                        orig_node_ids,
+                        graph,
+                        nodes,
+                    )
+                    road_xs_opt, road_ys_opt = route_nodes_to_edge_geometry_xy_3857(
+                        opt_node_ids,
+                        graph,
+                        nodes,
+                    )
+
+                    snapped_xs_orig, snapped_ys_orig = snapped_nodes_xy_3857(orig_node_ids, nodes)
+                    snapped_xs_opt, snapped_ys_opt = snapped_nodes_xy_3857(opt_node_ids, nodes)
+
+            total_km_original = route_length(
+                list(range(len(dist_matrix))),
+                dist_matrix,
+                closed=is_closed,
+            )
+            total_km_optimized = route_length(
+                route_indices,
+                dist_matrix,
+                closed=is_closed,
+            )
+
+            fig_orig = make_matplotlib_route_map(
+                orig_coords,
+                title=t('orig_order'),
+                color='blue',
+                road_xs=road_xs_orig,
+                road_ys=road_ys_orig,
+                snapped_xs=snapped_xs_orig,
+                snapped_ys=snapped_ys_orig,
+            )
+            fig_opt = make_matplotlib_route_map(
+                opt_coords,
+                title=t('opt_order'),
+                color='red',
+                road_xs=road_xs_opt,
+                road_ys=road_ys_opt,
+                snapped_xs=snapped_xs_opt,
+                snapped_ys=snapped_ys_opt,
+            )
 
             col_l, col_r = st.columns(2)
             with col_l:
+                st.markdown(f"**{t('orig_order')}**  \n{t('total_distance_km')} **{total_km_original:.2f}**")
                 st.pyplot(fig_orig, width='stretch')
             with col_r:
+                st.markdown(f"**{t('opt_order')}**  \n{t('total_distance_km')} **{total_km_optimized:.2f}**")
                 st.pyplot(fig_opt, width='stretch')
 
         try:

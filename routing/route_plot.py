@@ -14,16 +14,16 @@ def _transform_xy_lists(
     dst_crs: str = 'EPSG:3857',
 ) -> tuple[list[float], list[float]]:
     """
-    Transform coordinate lists between CRS.
+    Transform coordinate lists between coordinate reference systems.
 
     Args:
-        xs: X coordinates in src CRS.
-        ys: Y coordinates in src CRS.
-        src_crs: Source CRS string.
+        xs: X coordinates in the source CRS.
+        ys: Y coordinates in the source CRS.
+        src_crs: Source CRS string (e.g. 'EPSG:4326').
         dst_crs: Destination CRS string.
 
     Returns:
-        (xs_transformed, ys_transformed)
+        A tuple (xs_transformed, ys_transformed).
     """
     transformer = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
     xs_t: list[float] = []
@@ -41,16 +41,20 @@ def route_nodes_to_edge_geometry_xy_3857(
     nodes: gpd.GeoDataFrame,
 ) -> tuple[list[float], list[float]]:
     """
-    Expand a route of node ids into a polyline using edge geometries (where present),
-    returned as (x,y) in EPSG:3857 for plotting.
+    Expand a route of node IDs into a polyline using edge geometries (where present),
+    returned as (x, y) in EPSG:3857 for plotting.
+
+    For each consecutive pair (a, b) in route_node_ids, the shortest path is computed
+    in the graph (weighted by 'length'). For each edge, the edge geometry is used if
+    available; otherwise a straight segment between node coordinates is used.
 
     Args:
-        route_node_ids: Node ids in visit order (may include repeated first node for closed plots).
-        graph: NetworkX graph with 'length' edges and optional 'geometry'.
-        nodes: Nodes GeoDataFrame with x/y columns and CRS.
+        route_node_ids: Node IDs in visit order (may include repeated first node for a closed route).
+        graph: NetworkX graph with 'length' weights and optional 'geometry' per edge.
+        nodes: Nodes GeoDataFrame indexed by node ID, with columns 'x' and 'y' in nodes.crs.
 
     Returns:
-        (xs_3857, ys_3857)
+        A tuple (xs_3857, ys_3857) representing the route polyline in EPSG:3857.
     """
     if nodes.crs is None:
         raise RuntimeError('Nodes GeoDataFrame has no CRS.')
@@ -96,11 +100,11 @@ def snapped_nodes_xy_3857(
     Get snapped node coordinates in EPSG:3857 for plotting.
 
     Args:
-        snapped_node_ids: Node ids.
-        nodes: Nodes GeoDataFrame.
+        snapped_node_ids: Node IDs.
+        nodes: Nodes GeoDataFrame indexed by node ID, with columns 'x' and 'y' in nodes.crs.
 
     Returns:
-        (xs_3857, ys_3857)
+        A tuple (xs_3857, ys_3857) for the snapped nodes in EPSG:3857.
     """
     if nodes.crs is None:
         raise RuntimeError('Nodes GeoDataFrame has no CRS.')
@@ -120,22 +124,24 @@ def make_matplotlib_route_map(
     *,
     title: str,
     color: str,
-    road_xs: list[float] | None,
-    road_ys: list[float] | None,
-    snapped_xs: list[float] | None,
-    snapped_ys: list[float] | None,
+    road_xs: list[float] | None = None,
+    road_ys: list[float] | None = None,
+    snapped_xs: list[float] | None = None,
+    snapped_ys: list[float] | None = None,
 ) -> plt.Figure:
     """
-    Make a basemap-backed plot (EPSG:3857) comparing straight lines vs road overlay.
+    Make a basemap-backed plot (EPSG:3857) of a route, optionally overlaying:
+    - the road-network path polyline (road_xs/road_ys), and
+    - snapped-node markers (snapped_xs/snapped_ys).
 
     Args:
-        coords: List of (lat, lon) in WGS84 (already ordered for plotting).
+        coords: List of (lat, lon) in WGS84 (EPSG:4326), already ordered for plotting.
         title: Plot title.
-        color: Line color for the main line.
-        road_xs: Optional road polyline xs (EPSG:3857).
-        road_ys: Optional road polyline ys (EPSG:3857).
-        snapped_xs: Optional snapped node xs (EPSG:3857).
-        snapped_ys: Optional snapped node ys (EPSG:3857).
+        color: Color for the main route line.
+        road_xs: Optional road polyline x-coordinates in EPSG:3857.
+        road_ys: Optional road polyline y-coordinates in EPSG:3857.
+        snapped_xs: Optional snapped-point x-coordinates in EPSG:3857.
+        snapped_ys: Optional snapped-point y-coordinates in EPSG:3857.
 
     Returns:
         Matplotlib Figure.
@@ -154,10 +160,12 @@ def make_matplotlib_route_map(
 
     ax.plot(xs, ys, '-o', markersize=6, linewidth=2, color=color)
 
-    if road_xs and road_ys:
+    has_road = road_xs is not None and road_ys is not None and len(road_xs) > 0 and len(road_ys) > 0
+    if has_road:
         ax.plot(road_xs, road_ys, linewidth=3)
 
-    if snapped_xs and snapped_ys and len(snapped_xs) == len(xs):
+    has_snapped = snapped_xs is not None and snapped_ys is not None
+    if has_snapped and len(snapped_xs) == len(xs) and len(snapped_ys) == len(ys):
         ax.scatter(snapped_xs, snapped_ys, marker='x', s=60)
 
     for i, (x, y) in enumerate(zip(xs, ys), start=1):
@@ -167,10 +175,12 @@ def make_matplotlib_route_map(
 
     all_xs = list(xs)
     all_ys = list(ys)
-    if road_xs and road_ys:
+
+    if has_road:
         all_xs.extend(float(v) for v in road_xs)
         all_ys.extend(float(v) for v in road_ys)
-    if snapped_xs and snapped_ys:
+
+    if has_snapped:
         all_xs.extend(float(v) for v in snapped_xs)
         all_ys.extend(float(v) for v in snapped_ys)
 
