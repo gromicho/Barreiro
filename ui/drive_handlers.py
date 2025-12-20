@@ -6,7 +6,9 @@ These functions may touch Drive, but only when called.
 
 from persistence.dropbox_store import (
     DropboxStoreError,
+    list_address_versions,
     load_addresses_text,
+    load_addresses_text_version,
     save_addresses_text,
 )
 from persistence.geocoding_store import (
@@ -32,7 +34,7 @@ from ui.state_keys import init_state_if_missing
 def ensure_addresses_loaded(
     *,
     default_text: str,
-    filename: str = 'capelle_addresses.json',
+    filename: str = 'capelle',
 ) -> None:
     """
     Load addresses_text from Drive store into session_state once, if missing/empty.
@@ -124,7 +126,49 @@ def reload_addresses_from_drive(*, default_text: str) -> None:
         raise UiStateError(f'Herladen mislukt: {exc}') from exc
 
 
-def clear_geocoding_cache(*, filename: str = 'capelle_addresses.json') -> None:
+def get_address_versions_for_ui(*, filename: str | None = None) -> list[dict[str, object]]:
+    """
+    Return a list of available saved address versions for the UI.
+
+    Args:
+        filename: Dropbox store filename. If None, uses the current UI-selected store
+            filename from session state.
+
+    Returns:
+        A list of version metadata dicts. Returns an empty list on errors.
+    """
+    if filename is None:
+        filename = get_store_filename()
+
+    try:
+        return list_address_versions(filename=filename)
+    except DropboxStoreError:
+        return []
+    except Exception:
+        return []
+
+
+def load_addresses_version_from_drive(*, default_text: str, version: int) -> None:
+    """Load a specific saved address version into session_state."""
+    filename = get_store_filename()
+
+    try:
+        addresses_text, payload, file_id = load_addresses_text_version(
+            filename=filename,
+            version=int(version),
+        )
+        normalized = normalize_addresses_text(addresses_text) or normalize_addresses_text(default_text)
+
+        set_addresses_text(normalized)
+        set_drive_payload(payload if isinstance(payload, dict) else {})
+        set_drive_file_id(file_id)
+    except DropboxStoreError as exc:
+        raise UiStateError(f'Laden mislukt: {exc}') from exc
+    except Exception as exc:
+        raise UiStateError(f'Laden mislukt: {exc}') from exc
+
+
+def clear_geocoding_cache(*, filename: str = 'capelle') -> None:
     """
     Clear geocoding_cache in the Drive store.
 

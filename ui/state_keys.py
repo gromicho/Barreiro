@@ -10,12 +10,12 @@ STATE_DRIVE_PAYLOAD = 'drive_payload'
 STATE_STORE_FILENAME = 'store_filename'
 
 
-def init_state_if_missing(*, filename: str = 'capelle_addresses.json') -> None:
+def init_state_if_missing(*, filename: str = 'capelle') -> None:
     """
     Initialize Streamlit session_state keys if missing.
 
     Args:
-        filename: Drive JSON store filename.
+        filename: Instance name (e.g. 'capelle').
     """
     if STATE_STORE_FILENAME not in st.session_state:
         st.session_state[STATE_STORE_FILENAME] = str(filename)

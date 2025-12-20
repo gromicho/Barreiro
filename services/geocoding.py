@@ -199,7 +199,7 @@ def geocode_address(
 
     if persist:
         try:
-            cache, payload, path = load_geocoding_cache(filename=store_filename)
+            cache, payload, file_id = load_geocoding_cache(filename=store_filename)
             cached = cache_get(
                 cache,
                 addr_norm,
@@ -238,7 +238,7 @@ def geocode_address(
             save_geocoding_cache(
                 cache,
                 payload=payload,
-                path=path,
+                file_id=file_id,
                 filename=store_filename,
             )
         except GeocodingStoreError:

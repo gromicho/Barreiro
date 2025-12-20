@@ -27,6 +27,7 @@ from ui.widgets import (
     addresses_text_area,
     clear_geocoding_cache_button,
     drive_buttons_row,
+    drive_version_loader,
 )
 
 __all__ = [
@@ -47,5 +48,6 @@ __all__ = [
     'ensure_addresses_loaded',
     'addresses_text_area',
     'drive_buttons_row',
+    'drive_version_loader',
     'clear_geocoding_cache_button',
 ]

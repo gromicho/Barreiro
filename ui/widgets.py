@@ -4,6 +4,8 @@ import streamlit as st
 
 from ui.drive_handlers import (
     clear_geocoding_cache,
+    get_address_versions_for_ui,
+    load_addresses_version_from_drive,
     reload_addresses_from_drive,
     save_addresses_to_drive,
 )
@@ -72,6 +74,50 @@ def drive_buttons_row(
                     st.rerun()
             except UiStateError as exc:
                 st.error(t('reload_failed', error=str(exc)))
+
+
+def drive_version_loader(
+    *,
+    default_text: str,
+    width: str = 'stretch',
+    rerun_after_load: bool = True,
+) -> None:
+    """UI control to load a specific saved address version.
+
+    Intended for the "Full" UI only.
+    """
+    filename = get_store_filename()
+    versions = get_address_versions_for_ui(filename=filename)
+
+    if not versions:
+        st.caption(t('no_versions'))
+        return
+
+    options: list[str] = []
+    version_by_label: dict[str, int] = {}
+    for item in versions:
+        ver = int(item.get('version', 0))
+        ts = str(item.get('timestamp', '') or '').strip()
+        if ts:
+            label = f'v{ver} ({ts})'
+        else:
+            label = f'v{ver}'
+        options.append(label)
+        version_by_label[label] = ver
+
+    col_a, col_b = st.columns([3, 1])
+    with col_a:
+        choice = st.selectbox(t('version_label'), options, index=0, key='addresses_version_select')
+    with col_b:
+        if st.button(t('load_version'), width=width):
+            try:
+                ver = version_by_label.get(choice, int(versions[0].get('version', 0)))
+                load_addresses_version_from_drive(default_text=default_text, version=int(ver))
+                st.success(t('loaded_version_ok', version=int(ver)))
+                if rerun_after_load:
+                    st.rerun()
+            except UiStateError as exc:
+                st.error(t('load_version_failed', error=str(exc)))
 
 
 def clear_geocoding_cache_button(
