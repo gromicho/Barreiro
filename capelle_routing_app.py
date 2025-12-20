@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from routing_app import RoutingAppConfig, run_routing_app
+from routing.app import RoutingAppConfig, run_routing_app
 
 
 def main() -> None:
