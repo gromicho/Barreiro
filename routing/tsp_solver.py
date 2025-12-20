@@ -38,7 +38,37 @@ def solve_tsp_or_path_gurobi(
         raise ValueError('Distance matrix must be square.')
 
     n = int(c.shape[0])
+
+    # Trivial cases: the undirected degree-2 cycle model is infeasible for n <= 2.
+    if n <= 0:
+        raise ValueError('Distance matrix is empty.')
+
+    start = int(start_idx)
+    if start < 0 or start >= n:
+        raise ValueError('start_idx is out of range.')
+
+    if n == 1:
+        return [start]
+
+    if n == 2:
+        other = 1 - start
+        if closed:
+            return [start, other]
+
+        if end_idx is None:
+            raise ValueError('end_idx must be provided when closed is False.')
+
+        end = int(end_idx)
+        if end < 0 or end >= n:
+            raise ValueError('end_idx is out of range.')
+
+        if start == end:
+            return [start, other]
+
+        return [start, end]
+
     nodes = range(n)
+
 
     if (not closed) and end_idx is None:
         raise ValueError('end_idx must be provided when closed is False.')

@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from geocoder import GeocodingError, geocode_addresses
+from services.geocoder import GeocodingError, geocode_addresses
 from routing.drive_network import (
     assert_all_pairs_reachable,
     build_distance_matrix_networkx,
