@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from geocoder import GeocodingError, geocode_addresses
+from services.geocoding import GeocodingError, geocode_addresses
 from routing.drive_network import (
     assert_all_pairs_reachable,
     build_distance_matrix_networkx,
@@ -38,6 +38,7 @@ from ui.i18n.widgets import language_selector
 from ui.ui_state import (
     addresses_text_area,
     drive_buttons_row,
+    drive_version_loader,
     ensure_addresses_loaded,
     get_addresses_text,
     init_state_if_missing,
@@ -118,6 +119,9 @@ def main() -> None:
         width='stretch',
         rerun_after_reload=True,
     )
+
+    if not simple_mode:
+        drive_version_loader(default_text=default_text, width='stretch', rerun_after_load=True)
 
     route_type_label = st.radio(
         t('route_type'),

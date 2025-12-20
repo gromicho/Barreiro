@@ -66,24 +66,18 @@ def _get_secret(name: str, default: str = '') -> str:
         st = None
 
     if st is not None:
-        # Preferred: [dropbox] section in secrets.toml
         try:
             cfg = st.secrets.get('dropbox', None)
             if cfg is not None and hasattr(cfg, 'get'):
                 key = name.lower().removeprefix('dropbox_')
                 val = cfg.get(key, default)
-                if isinstance(val, str):
-                    return val
-                return str(val)
+                return val if isinstance(val, str) else str(val)
         except Exception:
             pass
 
-        # Legacy: top-level secret
         try:
             val = st.secrets.get(name, default)
-            if isinstance(val, str):
-                return val
-            return str(val)
+            return val if isinstance(val, str) else str(val)
         except Exception:
             pass
 
@@ -234,10 +228,8 @@ def _dropbox_list_folder_files(
 def _fmt_dropbox_dt_utc(dt_obj: object) -> str:
     """Format Dropbox datetime-like object as 'YYYY-MM-DD HH:MM UTC'."""
     try:
-        # Dropbox returns aware datetime in most SDKs.
-        dt = dt_obj
-        if hasattr(dt, 'astimezone'):
-            dt_utc = dt.astimezone(timezone.utc)
+        if hasattr(dt_obj, 'astimezone'):
+            dt_utc = dt_obj.astimezone(timezone.utc)
             return dt_utc.strftime('%Y-%m-%d %H:%M UTC')
     except Exception:
         pass
@@ -247,6 +239,7 @@ def _fmt_dropbox_dt_utc(dt_obj: object) -> str:
 # ---------------------------------------------------------------------
 # store logic
 # ---------------------------------------------------------------------
+
 
 def get_dropbox_client() -> dropbox.Dropbox:
     """Get a Dropbox client."""
@@ -259,6 +252,7 @@ def default_payload() -> dict[str, object]:
         'version': 1,
         'updated_at': _now_iso_utc(),
         'addresses_text': '',
+        'address_count': 0,
         'geocoding_cache': {},
     }
 
@@ -315,18 +309,7 @@ def save_store(
         The Dropbox path.
     """
     dbx = _build_dropbox_client()
-    path_norm = _dbx_path(path)
-
-    payload_out = dict(payload)
-    payload_out['updated_at'] = _now_iso_utc()
-
-    try:
-        content = json.dumps(payload_out, ensure_ascii=False, indent=2)
-    except Exception as exc:
-        raise DropboxStoreError(f'Payload is not JSON-serializable: {exc}') from exc
-
-    _dropbox_upload_text(dbx, path=path_norm, content=content)
-    return path_norm
+    return _save_store_at_path(dbx, payload=payload, path=path)
 
 
 # ---------------------------------------------------------------------
@@ -334,19 +317,8 @@ def save_store(
 # ---------------------------------------------------------------------
 
 
-
 def _instance_name(filename: str) -> str:
-    """Derive instance name from a legacy filename argument.
-
-    Historically, callers passed values like 'capelle_addresses.json'.
-    In the reengineered layout, callers should pass just 'capelle' or
-    'barreiro'. We accept both.
-
-    Examples:
-        'capelle' -> 'capelle'
-        'capelle_addresses.json' -> 'capelle'
-        'instances/capelle/addresses.json' -> 'capelle'
-    """
+    """Derive instance name from a legacy filename argument."""
     name = str(filename).strip().strip('/')
     if not name:
         return 'default'
@@ -359,8 +331,7 @@ def _instance_name(filename: str) -> str:
                 return parts[i + 1]
         return parts[-1].split('.')[0]
 
-    base = name
-    base = base.split('.')[0]
+    base = name.split('.')[0]
     if base.endswith('_addresses'):
         base = base[: -len('_addresses')]
     return base or 'default'
@@ -376,6 +347,45 @@ def _instance_addresses_version_path(instance: str, version: int) -> str:
     return f'instances/{instance}/addresses.{version}.json'
 
 
+def _count_addresses(addresses_text: str) -> int:
+    """Count non-empty address lines in the addresses_text payload."""
+    lines = str(addresses_text or '').splitlines()
+    return int(sum(1 for line in lines if line.strip()))
+
+
+def _dropbox_mkdirs(dbx: dropbox.Dropbox, *, folder: str) -> None:
+    """Ensure a folder exists in Dropbox (App Folder)."""
+    folder_norm = _dbx_path(folder)
+    try:
+        dbx.files_create_folder_v2(folder_norm)
+    except dropbox.exceptions.ApiError as exc:
+        try:
+            err = exc.error
+            if hasattr(err, 'is_path') and err.is_path():
+                path_err = err.get_path()
+                if hasattr(path_err, 'is_conflict') and path_err.is_conflict():
+                    return
+        except Exception:
+            pass
+        raise DropboxStoreError(f'Failed to create folder "{folder}": {exc}') from exc
+
+
+def _save_store_at_path(dbx: dropbox.Dropbox, *, payload: dict[str, object], path: str) -> str:
+    """Save JSON payload to a specific Dropbox path (overwrite)."""
+    path_norm = _dbx_path(path)
+
+    payload_out = dict(payload)
+    payload_out['updated_at'] = _now_iso_utc()
+
+    try:
+        content = json.dumps(payload_out, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        raise DropboxStoreError(f'Payload is not JSON-serializable: {exc}') from exc
+
+    _dropbox_upload_text(dbx, path=path_norm, content=content)
+    return path_norm
+
+
 def load_addresses_text(
     *,
     filename: str = 'capelle',
@@ -383,70 +393,15 @@ def load_addresses_text(
     """
     Load the latest address list for an instance.
 
-    Backwards-compatible return shape:
+    Returns:
         (addresses_text, payload, file_id_like)
-
-    Notes:
-        - 'filename' is interpreted as instance name (e.g. 'capelle').
-        - payload includes 'version' and 'addresses_text' keys.
-        - file_id_like is the Dropbox path to the latest snapshot.
     """
     instance = _instance_name(filename)
     path = _instance_addresses_path(instance)
 
-    try:
-        payload, path_norm = load_or_init_store(path=path)
-    except DropboxStoreError as exc:
-        raise DropboxStoreError(str(exc)) from exc
-
+    payload, path_norm = load_or_init_store(path=path)
     text = str(payload.get('addresses_text', '') or '')
     return text, payload, path_norm
-
-
-def save_addresses_text(
-    addresses_text: str,
-    *,
-    filename: str = 'capelle',
-    payload: dict[str, object] | None = None,
-    file_id: str | None = None,
-) -> str:
-    """
-    Save addresses_text as a new versioned snapshot for an instance.
-
-    Versioning:
-        - Reads current latest 'instances/<instance>/addresses.json'
-        - Next version is (current_version + 1), defaulting to 1
-        - Writes:
-            - instances/<instance>/addresses.<version>.json
-            - instances/<instance>/addresses.json
-
-    Returns:
-        Dropbox path to the latest snapshot JSON.
-    """
-    instance = _instance_name(filename)
-    latest_path = _instance_addresses_path(instance)
-
-    current_payload, _path_norm = load_or_init_store(path=latest_path)
-    current_version = current_payload.get('version')
-    if isinstance(current_version, int) and current_version >= 0:
-        next_version = current_version + 1
-    else:
-        next_version = 1
-
-    payload_out: dict[str, object] = {
-        'version': next_version,
-        'addresses_text': str(addresses_text),
-    }
-
-    version_path = _instance_addresses_version_path(instance, next_version)
-    save_store(payload_out, path=version_path)
-    return save_store(payload_out, path=latest_path)
-
-
-def load_addresses_only(*, filename: str = 'capelle') -> str:
-    """Convenience: load only addresses_text."""
-    text, _payload, _path = load_addresses_text(filename=filename)
-    return text
 
 
 def list_address_versions(*, filename: str = 'capelle') -> list[dict[str, object]]:
@@ -457,10 +412,7 @@ def list_address_versions(*, filename: str = 'capelle') -> list[dict[str, object
           - version: int
           - timestamp: str (e.g. '2025-12-17 17:11 UTC')
           - path: str (Dropbox path)
-
-    Notes:
-        Uses Dropbox file metadata timestamps (server_modified) to avoid
-        downloading all snapshots.
+          - address_count: int | None
     """
     instance = _instance_name(filename)
     folder = f'instances/{instance}'
@@ -475,16 +427,94 @@ def list_address_versions(*, filename: str = 'capelle') -> list[dict[str, object
         name = getattr(meta, 'name', '')
         if not (isinstance(name, str) and name.startswith(prefix) and name.endswith(suffix)):
             continue
+
         mid = name[len(prefix):-len(suffix)]
         if not mid.isdigit():
             continue
+
         version = int(mid)
         ts = _fmt_dropbox_dt_utc(getattr(meta, 'server_modified', None))
         path_display = f'{folder}/{name}'
-        out.append({'version': version, 'timestamp': ts, 'path': path_display})
+
+        address_count: int | None = None
+        try:
+            text = _dropbox_download_text(dbx, path=path_display)
+            payload = json.loads(text)
+            if isinstance(payload, dict):
+                raw = payload.get('address_count', None)
+                if isinstance(raw, int):
+                    address_count = raw
+        except Exception:
+            address_count = None
+
+        out.append(
+            {
+                'version': version,
+                'timestamp': ts,
+                'path': path_display,
+                'address_count': address_count,
+            }
+        )
 
     out.sort(key=lambda d: int(d.get('version', 0)), reverse=True)
     return out
+
+
+def save_addresses_text(
+    addresses_text: str,
+    *,
+    filename: str = 'capelle',
+    payload: dict[str, object] | None = None,
+    file_id: str | None = None,
+) -> str:
+    """Save addresses text as a new versioned snapshot and update latest pointer.
+
+    Args:
+        addresses_text: Raw address text, typically one address per line.
+        filename: Logical store name used to derive the instance folder.
+        payload: Optional base payload to extend or override.
+        file_id: Optional identifier used by older backends (unused for Dropbox).
+
+    Returns:
+        Dropbox path of the newly created versioned snapshot.
+    """
+    _ = file_id
+
+    normalized_text = str(addresses_text)
+    address_count = _count_addresses(normalized_text)
+
+    versions = list_address_versions(filename=filename)
+    if versions:
+        next_version = max(int(v.get('version', 0)) for v in versions) + 1
+    else:
+        next_version = 1
+
+    payload_out: dict[str, object] = default_payload()
+    if payload is not None:
+        if not isinstance(payload, dict):
+            raise TypeError('payload must be a dict[str, object] or None')
+        payload_out.update(payload)
+
+    payload_out.update(
+        {
+            'version': int(next_version),
+            'addresses_text': normalized_text,
+            'address_count': int(address_count),
+        }
+    )
+
+    instance = _instance_name(filename)
+    folder = f'instances/{instance}'
+    versioned_path = _instance_addresses_version_path(instance, int(next_version))
+    latest_path = _instance_addresses_path(instance)
+
+    dbx = _build_dropbox_client()
+    _dropbox_mkdirs(dbx, folder=folder)
+
+    _save_store_at_path(dbx, payload=payload_out, path=versioned_path)
+    _save_store_at_path(dbx, payload=payload_out, path=latest_path)
+
+    return _dbx_path(versioned_path)
 
 
 def load_addresses_text_version(
@@ -492,17 +522,15 @@ def load_addresses_text_version(
     filename: str = 'capelle',
     version: int,
 ) -> tuple[str, dict[str, object], str | None]:
-    """Load a specific versioned address snapshot for an instance.
-
-    Args:
-        filename: Instance name (or legacy filename).
-        version: Snapshot version number.
-
-    Returns:
-        (addresses_text, payload, file_id_like)
-    """
+    """Load a specific versioned address snapshot for an instance."""
     instance = _instance_name(filename)
     path = _instance_addresses_version_path(instance, int(version))
     payload, path_norm = load_or_init_store(path=path)
     text = str(payload.get('addresses_text', '') or '')
     return text, payload, path_norm
+
+
+def load_addresses_only(*, filename: str = 'capelle') -> str:
+    """Convenience: load only addresses_text."""
+    text, _payload, _path = load_addresses_text(filename=filename)
+    return text

@@ -95,15 +95,25 @@ def drive_version_loader(
 
     options: list[str] = []
     version_by_label: dict[str, int] = {}
+
     for item in versions:
         ver = int(item.get('version', 0))
         ts = str(item.get('timestamp', '') or '').strip()
+
+        raw_count = item.get('address_count', None)
+        address_count: int | None = raw_count if isinstance(raw_count, int) else None
+
+        parts: list[str] = [f'v{ver}']
+        if address_count is not None:
+            parts.append(f'{address_count} addresses')
         if ts:
-            label = f'v{ver} ({ts})'
-        else:
-            label = f'v{ver}'
-        options.append(label)
-        version_by_label[label] = ver
+            parts.append(ts)
+
+        label = ' (' + ', '.join(parts[1:]) + ')' if len(parts) > 1 else ''
+        full_label = parts[0] + label
+
+        options.append(full_label)
+        version_by_label[full_label] = ver
 
     col_a, col_b = st.columns([3, 1])
     with col_a:
