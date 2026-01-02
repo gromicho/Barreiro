@@ -537,15 +537,13 @@ def load_addresses_only(*, filename: str = 'capelle') -> str:
     return text
 
 
-from __future__ import annotations
-
-import re
-
-import dropbox
+# ---------------------------------------------------------------------
+# debug photo upload (camera OCR support)
+# ---------------------------------------------------------------------
 
 
 def _safe_slug(s: str) -> str:
-    """
+    '''
     Make a string safe for use in filenames (conservative).
 
     Args:
@@ -553,13 +551,13 @@ def _safe_slug(s: str) -> str:
 
     Returns:
         Slugified string.
-    """
-    s2 = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(s).strip())
-    return s2.strip("_") or "photo"
+    '''
+    s2 = re.sub(r'[^a-zA-Z0-9._-]+', '_', str(s).strip())
+    return s2.strip('_') or 'photo'
 
 
 def _infer_extension(mime_type: str) -> str:
-    """
+    '''
     Infer a file extension from an image MIME type.
 
     Args:
@@ -567,14 +565,13 @@ def _infer_extension(mime_type: str) -> str:
 
     Returns:
         File extension without dot (e.g. 'jpg', 'png').
-    """
-    mt = (mime_type or "").lower().strip()
-    if "png" in mt:
-        return "png"
-    if "webp" in mt:
-        return "webp"
-    # default for camera_input is usually jpeg
-    return "jpg"
+    '''
+    mt = (mime_type or '').lower().strip()
+    if 'png' in mt:
+        return 'png'
+    if 'webp' in mt:
+        return 'webp'
+    return 'jpg'
 
 
 def _dropbox_upload_bytes(
@@ -583,14 +580,14 @@ def _dropbox_upload_bytes(
     path: str,
     content: bytes,
 ) -> None:
-    """
+    '''
     Upload or overwrite binary content in Dropbox.
 
     Args:
         dbx: Dropbox client.
         path: Dropbox path.
         content: Raw bytes.
-    """
+    '''
     try:
         dbx.files_upload(
             content,
@@ -602,7 +599,7 @@ def _dropbox_upload_bytes(
 
 
 def _dropbox_get_or_create_shared_link(dbx: dropbox.Dropbox, *, path: str) -> str | None:
-    """
+    '''
     Get (or create) a shared link for a file. Returns None if it fails.
 
     Note: depending on app/folder permissions, shared links may be unavailable.
@@ -613,10 +610,10 @@ def _dropbox_get_or_create_shared_link(dbx: dropbox.Dropbox, *, path: str) -> st
 
     Returns:
         Shared link URL or None.
-    """
+    '''
     try:
         res = dbx.sharing_list_shared_links(path=_dbx_path(path), direct_only=True)
-        if getattr(res, "links", None):
+        if getattr(res, 'links', None):
             return res.links[0].url
         created = dbx.sharing_create_shared_link_with_settings(_dbx_path(path))
         return created.url
@@ -627,12 +624,12 @@ def _dropbox_get_or_create_shared_link(dbx: dropbox.Dropbox, *, path: str) -> st
 def save_debug_photo(
     image_bytes: bytes,
     *,
-    filename: str = "capelle",
-    mime_type: str = "image/jpeg",
-    label: str = "camera",
+    filename: str = 'capelle',
+    mime_type: str = 'image/jpeg',
+    label: str = 'camera',
     make_shared_link: bool = False,
 ) -> dict[str, str | None]:
-    """
+    '''
     Save a captured photo to Dropbox for debugging.
 
     Stores under:
@@ -649,141 +646,33 @@ def save_debug_photo(
         Dict with:
           - path: Dropbox path to the uploaded image
           - shared_url: Optional shared link URL (may be None)
-    """
+    '''
     instance = _instance_name(filename)
     ext = _infer_extension(mime_type)
-    ts = _now_iso_utc().replace(":", "").replace("-", "")  # compact-ish
+    ts = _now_iso_utc().replace(':', '').replace('-', '')
     label_safe = _safe_slug(label)
 
-    folder = f"instances/{instance}/photos"
-    name = f"{label_safe}_{ts}.{ext}"
-    path = f"{folder}/{name}"
+    folder = f'instances/{instance}/photos'
+    name = f'{label_safe}_{ts}.{ext}'
+    path = f'{folder}/{name}'
 
     dbx = _build_dropbox_client()
     _dropbox_mkdirs(dbx, folder=folder)
     _dropbox_upload_bytes(dbx, path=path, content=image_bytes)
 
     shared_url = _dropbox_get_or_create_shared_link(dbx, path=path) if make_shared_link else None
-    return {"path": _dbx_path(path), "shared_url": shared_url}
+    return {
+        'path': _dbx_path(path),
+        'shared_url': shared_url,
+    }
 
-def _safe_slug(s: str) -> str:
-    """
-    Make a string safe for use in filenames (conservative).
-
-    Args:
-        s: Input string.
-
-    Returns:
-        Slugified string.
-    """
-    s2 = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(s).strip())
-    return s2.strip("_") or "photo"
-
-
-def _infer_extension(mime_type: str) -> str:
-    """
-    Infer a file extension from an image MIME type.
-
-    Args:
-        mime_type: e.g. 'image/jpeg', 'image/png'.
-
-    Returns:
-        File extension without dot (e.g. 'jpg', 'png').
-    """
-    mt = (mime_type or "").lower().strip()
-    if "png" in mt:
-        return "png"
-    if "webp" in mt:
-        return "webp"
-    # default for camera_input is usually jpeg
-    return "jpg"
-
-
-def _dropbox_upload_bytes(
-    dbx: dropbox.Dropbox,
-    *,
-    path: str,
-    content: bytes,
-) -> None:
-    """
-    Upload or overwrite binary content in Dropbox.
-
-    Args:
-        dbx: Dropbox client.
-        path: Dropbox path.
-        content: Raw bytes.
-    """
-    try:
-        dbx.files_upload(
-            content,
-            _dbx_path(path),
-            mode=dropbox.files.WriteMode.overwrite,
-        )
-    except dropbox.exceptions.ApiError as exc:
-        raise DropboxStoreError(f'Failed to upload "{path}": {exc}') from exc
-
-
-def _dropbox_get_or_create_shared_link(dbx: dropbox.Dropbox, *, path: str) -> str | None:
-    """
-    Get (or create) a shared link for a file. Returns None if it fails.
-
-    Note: depending on app/folder permissions, shared links may be unavailable.
-
-    Args:
-        dbx: Dropbox client.
-        path: Dropbox path.
-
-    Returns:
-        Shared link URL or None.
-    """
-    try:
-        res = dbx.sharing_list_shared_links(path=_dbx_path(path), direct_only=True)
-        if getattr(res, "links", None):
-            return res.links[0].url
-        created = dbx.sharing_create_shared_link_with_settings(_dbx_path(path))
-        return created.url
-    except Exception:
-        return None
-
-
-def save_debug_photo(
-    image_bytes: bytes,
-    *,
-    filename: str = "capelle",
-    mime_type: str = "image/jpeg",
-    label: str = "camera",
-    make_shared_link: bool = False,
-) -> dict[str, str | None]:
-    """
-    Save a captured photo to Dropbox for debugging.
-
-    Stores under:
-      instances/{instance}/photos/{label}_{timestamp}.{ext}
-
-    Args:
-        image_bytes: Raw image bytes from Streamlit camera_input.
-        filename: Instance name / store filename (same semantics as your other functions).
-        mime_type: Image MIME type.
-        label: Short label to include in the filename (e.g. 'camera', 'ocr_fail').
-        make_shared_link: If True, attempt to create/get a shared link.
-
-    Returns:
-        Dict with:
-          - path: Dropbox path to the uploaded image
-          - shared_url: Optional shared link URL (may be None)
-    """
-    instance = _instance_name(filename)
-    ext = _infer_extension(mime_type)
-    ts = _now_iso_utc().replace(":", "").replace("-", "")  # compact-ish
-    label_safe = _safe_slug(label)
-
-    folder = f"instances/{instance}/photos"
-    name = f"{label_safe}_{ts}.{ext}"
-    path = f"{folder}/{name}"
-
-    dbx = _build_dropbox_client()
-    _dropbox_mkdirs(dbx, folder=folder)
-    _dropbox_upload_bytes(dbx, path=path, content=image_bytes)
-
-    shared_url = _dropbox_get_or_create_shared_link(dbx, path=path) if make_shared_link else None
-    return {"path": _dbx_path(path), "shared_url": shared_url}
+__all__ = [
+    'DropboxStoreError',
+    'get_dropbox_client',
+    'load_addresses_text',
+    'save_addresses_text',
+    'list_address_versions',
+    'load_addresses_text_version',
+    'load_addresses_only',
+    'save_debug_photo',
+]
