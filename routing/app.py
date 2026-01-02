@@ -1,10 +1,10 @@
-"""
+'''
 Shared Streamlit routing application.
 
 All routing logic and UI lives here.
 City- or instance-specific apps should only provide configuration and call
 `run_routing_app(cfg=...)`.
-"""
+'''
 
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ from ui.i18n.t import t
 from ui.i18n.widgets import language_selector
 from ui.ui_state import (
     addresses_text_area,
+    camera_ocr_widget,
     drive_buttons_row,
     drive_version_loader,
     ensure_addresses_loaded,
@@ -114,6 +115,29 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
     default_text = ''
 
     ensure_addresses_loaded(default_text=default_text, filename=cfg.store_filename)
+
+    # ------------------------------------------------------------------
+    # Camera OCR (optional): in Full mode we show debug output.
+    # If OCR overwrites addresses, we duplicate the first address at the top
+    # (matches your current behavior requirement).
+    # ------------------------------------------------------------------
+    if simple_mode:
+        camera_ocr_widget(
+            filename=cfg.store_filename,
+            model='gpt-4.1-mini',
+            overwrite=True,
+            show_debug=False,
+            duplicate_first_on_overwrite=True,
+        )
+    else:
+        with st.expander('📷 Camera OCR (debug)', expanded=False):
+            camera_ocr_widget(
+                filename=cfg.store_filename,
+                model='gpt-4.1-mini',
+                overwrite=True,
+                show_debug=True,
+                duplicate_first_on_overwrite=True,
+            )
 
     addresses_text_area(
         label=t('addresses_label'),
@@ -341,10 +365,14 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
 
             col_l, col_r = st.columns(2)
             with col_l:
-                st.markdown(f"**{t('orig_order')}**  \n{t('total_distance_km')} **{total_km_original:.2f}**")
+                st.markdown(
+                    f"**{t('orig_order')}**  \n{t('total_distance_km')} **{total_km_original:.2f}**"
+                )
                 st.pyplot(fig_orig, width='stretch')
             with col_r:
-                st.markdown(f"**{t('opt_order')}**  \n{t('total_distance_km')} **{total_km_optimized:.2f}**")
+                st.markdown(
+                    f"**{t('opt_order')}**  \n{t('total_distance_km')} **{total_km_optimized:.2f}**"
+                )
                 st.pyplot(fig_opt, width='stretch')
 
         try:

@@ -1,6 +1,19 @@
-"""Streamlit UI widgets (thin glue)."""
+'''
+Streamlit UI widgets (thin glue).
+
+This module contains small, composable UI widget functions. It should not contain
+routing logic or heavy services—only orchestration of UI + calling services.
+'''
+
+from __future__ import annotations
+
+import os
 
 import streamlit as st
+from openai import OpenAI
+
+from services.address_ocr import extract_addresses_from_image
+from persistence.dropbox_store import save_debug_photo
 
 from ui.drive_handlers import (
     clear_geocoding_cache,
@@ -18,6 +31,122 @@ from ui.state_accessors import (
 )
 from ui.state_keys import init_state_if_missing
 
+
+DEFAULT_OCR_MODEL = 'gpt-4.1-mini'
+
+
+# -----------------------------------------------------------------------------
+# OpenAI client
+# -----------------------------------------------------------------------------
+
+@st.cache_resource(show_spinner=False)
+def _get_openai_client() -> OpenAI:
+    '''
+    Create and cache the OpenAI client.
+
+    Returns:
+        Cached OpenAI client.
+
+    Raises:
+        RuntimeError: If OPENAI_API_KEY is missing.
+    '''
+    api_key = os.getenv('OPENAI_API_KEY', '').strip()
+    if not api_key:
+        raise RuntimeError('Missing OPENAI_API_KEY')
+    return OpenAI(api_key=api_key)
+
+
+# -----------------------------------------------------------------------------
+# Camera OCR (camera-only) + Dropbox debug storage
+# -----------------------------------------------------------------------------
+
+def camera_ocr_widget(
+    *,
+    filename: str | None = None,
+    model: str = DEFAULT_OCR_MODEL,
+    overwrite: bool = True,
+    show_debug: bool = False,
+    duplicate_first_on_overwrite: bool = False,
+) -> bool:
+    '''
+    ... (same docstring, add:)
+
+    Args:
+        duplicate_first_on_overwrite: If True and overwrite=True, duplicate the first
+            extracted address by prepending it as the first line.
+
+    Returns:
+        True if OCR produced addresses and updated state, else False.
+    '''
+    st.subheader('📷 Camera OCR')
+
+    photo = st.camera_input('Take a photo of the address note')
+    if photo is None:
+        return False
+
+    image_bytes = photo.getvalue()
+    mime_type = photo.type or 'image/jpeg'
+
+    effective_filename = filename or get_store_filename()
+
+    saved_path: str | None = None
+    try:
+        saved = save_debug_photo(
+            image_bytes,
+            filename=effective_filename,
+            mime_type=mime_type,
+            label='camera',
+            make_shared_link=False,
+        )
+        saved_path = str(saved.get('path') or '') or None
+        if show_debug and saved_path:
+            st.caption(f'Saved debug photo: {saved_path}')
+    except Exception as exc:
+        st.warning(f'Dropbox photo save failed (continuing): {exc}')
+
+    try:
+        client = _get_openai_client()
+        with st.spinner('Extracting addresses...'):
+            addresses, raw = extract_addresses_from_image(
+                client=client,
+                image_bytes=image_bytes,
+                mime_type=mime_type,
+                model=model,
+            )
+    except Exception as exc:
+        st.error(f'OCR failed: {exc}')
+        return False
+
+    if not addresses:
+        st.info('No addresses found.')
+        if show_debug:
+            with st.expander('OCR debug'):
+                if saved_path:
+                    st.write(f'Dropbox path: `{saved_path}`')
+                st.code(raw, language='json')
+        return False
+
+    if overwrite:
+        if duplicate_first_on_overwrite and len(addresses) >= 1:
+            addresses = [addresses[0]] + addresses
+
+        new_text = '\n'.join(addresses).strip()
+        set_addresses_text(new_text)
+    else:
+        new_text = '\n'.join(addresses).strip()
+        existing = get_addresses_text().strip()
+        combined = (existing + '\n' + new_text).strip() if existing else new_text
+        set_addresses_text(combined)
+
+    st.success(f'Loaded {len(addresses)} addresses into the input box.')
+
+    if show_debug:
+        with st.expander('OCR debug'):
+            if saved_path:
+                st.write(f'Dropbox path: `{saved_path}`')
+            st.code(raw, language='json')
+
+    return True
 
 def addresses_text_area(
     *,
