@@ -1,11 +1,3 @@
-'''
-Shared Streamlit routing application.
-
-All routing logic and UI lives here.
-City- or instance-specific apps should only provide configuration and call
-`run_routing_app(cfg=...)`.
-'''
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -33,14 +25,14 @@ from routing.timing import timeblock
 from routing.tsp_solver import route_length, solve_tsp_or_path_gurobi
 from ui.i18n.t import t
 from ui.i18n.widgets import language_selector
-from ui.ui_state import (
+from ui.state_accessors import get_addresses_text
+from ui.state_keys import init_state_if_missing
+from ui.widgets import (
     addresses_text_area,
     camera_ocr_widget,
     drive_buttons_row,
     drive_version_loader,
     ensure_addresses_loaded,
-    get_addresses_text,
-    init_state_if_missing,
 )
 
 LOGFILE_DEFAULT: str = 'routing_time_log.txt'
@@ -49,18 +41,22 @@ MAX_SNAP_DISTANCE_M: float = 5000.0
 
 @dataclass(frozen=True)
 class RoutingAppConfig:
-    """Configuration for a routing app instance."""
+    '''Configuration for a routing app instance.'''
 
     store_filename: str
     drive_prefix: str
     title_name: str
     title_city: str
+
+    # Instance-specific start/end anchors (e.g. home, depot)
+    home_address: str
+
     data_dir: Path = Path('data')
     logfile: str = LOGFILE_DEFAULT
 
 
 def _setup_logging(*, logfile: str) -> None:
-    """Configure logging once per process."""
+    '''Configure logging once per process.'''
     if getattr(_setup_logging, '_configured', False):
         return
 
@@ -77,12 +73,51 @@ def _setup_logging(*, logfile: str) -> None:
 
 @st.cache_resource(show_spinner=False)
 def _cached_drive_graph(data_dir_str: str, drive_prefix: str) -> tuple[object, object]:
-    """Load and cache the drive graph per (data_dir, drive_prefix)."""
+    '''Load and cache the drive graph per (data_dir, drive_prefix).'''
     return load_drive_graph(data_dir=Path(data_dir_str), drive_prefix=drive_prefix)
 
 
+def _parse_addresses(text: str) -> list[str]:
+    '''Parse non-empty address lines from a text blob.'''
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _build_input_addresses(*, cfg: RoutingAppConfig, addresses_text: str, ocr_used: bool) -> list[str]:
+    '''
+    Build the final address list used for routing.
+
+    Rules:
+    - If OCR was used (instead of typing/pasting), prepend the first OCR address again.
+      (You asked to keep the same 'first address repeated' behavior.)
+    - Always include the instance-specific home address as the first address.
+    - Avoid obvious duplicates of home at the top.
+
+    Args:
+        cfg: Routing app configuration (includes home_address).
+        addresses_text: Text from the addresses textarea.
+        ocr_used: Whether OCR was used to populate the textarea.
+
+    Returns:
+        Address list for routing.
+    '''
+    addresses = _parse_addresses(addresses_text)
+
+    if not addresses:
+        return [cfg.home_address]
+
+    if ocr_used and len(addresses) >= 1:
+        addresses = [addresses[0]] + addresses
+
+    home = cfg.home_address.strip()
+    if home:
+        if not addresses or addresses[0] != home:
+            addresses = [home] + addresses
+
+    return addresses
+
+
 def run_routing_app(*, cfg: RoutingAppConfig) -> None:
-    """Run the shared Streamlit routing app for the given configuration."""
+    '''Run the shared Streamlit routing app for the given configuration.'''
     _setup_logging(logfile=cfg.logfile)
     logging.info('Starting routing app: %s', cfg.store_filename)
 
@@ -113,30 +148,26 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
         st.markdown(t('instructions'))
 
     default_text = ''
-
     ensure_addresses_loaded(default_text=default_text, filename=cfg.store_filename)
 
-    # ------------------------------------------------------------------
-    # Camera OCR (optional): in Full mode we show debug output.
-    # If OCR overwrites addresses, we duplicate the first address at the top
-    # (matches your current behavior requirement).
-    # ------------------------------------------------------------------
+    # Camera OCR: optional, debug shown only in Full UI.
+    # Returns True if OCR populated state.
     if simple_mode:
-        camera_ocr_widget(
+        ocr_used = camera_ocr_widget(
             filename=cfg.store_filename,
             model='gpt-4.1-mini',
             overwrite=True,
             show_debug=False,
-            duplicate_first_on_overwrite=True,
+            duplicate_first_on_overwrite=False,  # we handle duplication in _build_input_addresses
         )
     else:
         with st.expander('📷 Camera OCR (debug)', expanded=False):
-            camera_ocr_widget(
+            ocr_used = camera_ocr_widget(
                 filename=cfg.store_filename,
                 model='gpt-4.1-mini',
                 overwrite=True,
                 show_debug=True,
-                duplicate_first_on_overwrite=True,
+                duplicate_first_on_overwrite=False,  # we handle duplication in _build_input_addresses
             )
 
     addresses_text_area(
@@ -170,7 +201,11 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
 
     logs: list[str] = []
     with timeblock('Total optimization run', logs):
-        addresses = [a.strip() for a in get_addresses_text().splitlines() if a.strip()]
+        addresses = _build_input_addresses(
+            cfg=cfg,
+            addresses_text=get_addresses_text(),
+            ocr_used=bool(ocr_used),
+        )
 
         if len(addresses) < 2:
             st.error(t('need_two'))
@@ -296,7 +331,6 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
             orig_node_ids = snapped_node_ids[:]
             opt_node_ids = [snapped_node_ids[i] for i in route_indices]
 
-            # Close the displayed loop if needed (avoid double-close if already closed).
             if is_closed:
                 if not (len(orig_coords) >= 2 and orig_coords[0] == orig_coords[-1]):
                     orig_coords = orig_coords + [orig_coords[0]]

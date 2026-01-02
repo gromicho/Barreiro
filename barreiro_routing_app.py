@@ -10,6 +10,7 @@ def main() -> None:
         drive_prefix='barreiro_drive',
         title_name='Dra. Anneke Joosten',
         title_city='Barreiro',
+        home_address='Hospital Nossa Senhora do Rosario, Barreiro, Portugal',
     )
     run_routing_app(cfg=cfg)
 
