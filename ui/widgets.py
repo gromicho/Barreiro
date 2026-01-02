@@ -146,6 +146,7 @@ def camera_ocr_widget(
                 st.write(f'Dropbox path: `{saved_path}`')
             st.code(raw, language='json')
 
+    st.rerun()  # optional but makes it immediate/obvious
     return True
 
 def addresses_text_area(
@@ -160,12 +161,15 @@ def addresses_text_area(
 
     init_state_if_missing(filename=get_store_filename())
 
+    # Ensure the key exists once (Streamlit will own it afterwards)
+    st.session_state.setdefault(key, get_addresses_text())
+
     value = st.text_area(
         label,
-        value=get_addresses_text(),
         height=int(height),
         key=key,
     )
+
     set_addresses_text(value)
     return value
 
