@@ -64,6 +64,7 @@ def camera_ocr_widget(
     *,
     filename: str | None = None,
     model: str = DEFAULT_OCR_MODEL,
+    home_address: str | None = None,
     overwrite: bool = True,
     show_debug: bool = False,
     duplicate_first_on_overwrite: bool = False,
@@ -126,19 +127,21 @@ def camera_ocr_widget(
                 st.code(raw, language='json')
         return False
 
+    lines = addresses[:]
+
     if overwrite:
         if duplicate_first_on_overwrite and len(addresses) >= 1:
-            addresses = [addresses[0]] + addresses
+            lines = [lines[0]] + lines
 
-        new_text = '\n'.join(addresses).strip()
+        new_text = '\n'.join(lines).strip()
         set_addresses_text(new_text)
     else:
-        new_text = '\n'.join(addresses).strip()
+        new_text = '\n'.join(lines).strip()
         existing = get_addresses_text().strip()
         combined = (existing + '\n' + new_text).strip() if existing else new_text
         set_addresses_text(combined)
 
-    st.success(f'Loaded {len(addresses)} addresses into the input box.')
+    st.success(f'Loaded {len(lines)} addresses into the input box.')
 
     if show_debug:
         with st.expander('OCR debug'):

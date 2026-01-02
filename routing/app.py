@@ -156,6 +156,7 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
         ocr_used = camera_ocr_widget(
             filename=cfg.store_filename,
             model='gpt-4.1-mini',
+            home_address=cfg.home_address,
             overwrite=True,
             show_debug=False,
             duplicate_first_on_overwrite=False,  # we handle duplication in _build_input_addresses
@@ -165,6 +166,7 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
             ocr_used = camera_ocr_widget(
                 filename=cfg.store_filename,
                 model='gpt-4.1-mini',
+                home_address=cfg.home_address,
                 overwrite=True,
                 show_debug=True,
                 duplicate_first_on_overwrite=False,  # we handle duplication in _build_input_addresses
