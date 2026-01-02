@@ -11,3 +11,4 @@ pyproj
 shapely
 gurobipy
 dropbox
+openai
