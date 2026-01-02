@@ -27,12 +27,12 @@ from ui.i18n.t import t
 from ui.i18n.widgets import language_selector
 from ui.state_accessors import get_addresses_text
 from ui.state_keys import init_state_if_missing
+from ui.drive_handlers import ensure_addresses_loaded
 from ui.widgets import (
     addresses_text_area,
     camera_ocr_widget,
     drive_buttons_row,
     drive_version_loader,
-    ensure_addresses_loaded,
 )
 
 LOGFILE_DEFAULT: str = 'routing_time_log.txt'
