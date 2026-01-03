@@ -55,98 +55,137 @@ def camera_ocr_widget(
     *,
     filename: str | None = None,
     model: str = DEFAULT_OCR_MODEL,
-    home_address: str | None = None,
     overwrite: bool = True,
     show_debug: bool = False,
     duplicate_first_on_overwrite: bool = False,
 ) -> bool:
     """
-    Camera-only OCR widget that extracts addresses from a photo and writes them into
-    the shared addresses text state.
-
-    Args:
-        filename: Optional store filename override.
-        model: OCR model name.
-        home_address: Unused here (kept for API compatibility).
-        overwrite: If True, replace addresses text. If False, append.
-        show_debug: If True, show debug expander with raw OCR output.
-        duplicate_first_on_overwrite: If True and overwrite=True, duplicate the first
-            extracted address by prepending it as the first line.
+    Mobile-friendly camera OCR widget.
 
     Returns:
-        True if OCR produced addresses and updated state, else False.
+        True if addresses were applied to state, else False.
     """
-    _ = home_address  # reserved for future behavior
-    st.subheader(f'📷 {t("camera_ocr_title")}')
+    st.subheader(t('camera_ocr_title'))
 
-    photo = st.camera_input(t('camera_ocr_take_photo'))
+    if 'ocr_photo' not in st.session_state:
+        st.session_state['ocr_photo'] = None
+    if 'ocr_preview_text' not in st.session_state:
+        st.session_state['ocr_preview_text'] = ''
+
+    photo = st.camera_input(t('camera_ocr_take_photo'), key='camera_ocr_input')
     if photo is None:
         return False
 
+    # Keep photo stable across reruns until user applies or cancels
+    st.session_state['ocr_photo'] = photo
+
+    # Extract once per captured image (avoid re-OCR on each rerun)
     image_bytes = photo.getvalue()
     mime_type = photo.type or 'image/jpeg'
-    effective_filename = filename or get_store_filename()
 
-    saved_path: str | None = None
-    try:
-        saved = save_debug_photo(
-            image_bytes,
-            filename=effective_filename,
-            mime_type=mime_type,
-            label='camera',
-            make_shared_link=False,
-        )
-        saved_path = str(saved.get('path') or '') or None
-        if show_debug and saved_path:
-            st.caption(t('saved_debug_photo', path=saved_path))
-    except Exception as exc:
-        st.warning(t('dropbox_photo_save_failed', error=str(exc)))
+    # Simple cache key: length + mime type
+    cache_key = (len(image_bytes), mime_type)
+    if st.session_state.get('ocr_last_key') != cache_key:
+        st.session_state['ocr_last_key'] = cache_key
 
-    try:
-        client = _get_openai_client()
-        with st.spinner(t('ocr_extracting')):
-            addresses, raw = extract_addresses_from_image(
-                client=client,
-                image_bytes=image_bytes,
+        effective_filename = filename or get_store_filename()
+        saved_path: str | None = None
+
+        try:
+            saved = save_debug_photo(
+                image_bytes,
+                filename=effective_filename,
                 mime_type=mime_type,
-                model=model,
+                label='camera',
+                make_shared_link=False,
             )
-    except Exception as exc:
-        st.error(t('ocr_failed', error=str(exc)))
-        return False
+            saved_path = str(saved.get('path') or '') or None
+            st.session_state['ocr_saved_path'] = saved_path
+        except Exception as exc:
+            st.warning(t('dropbox_photo_save_failed', error=str(exc)))
+            st.session_state['ocr_saved_path'] = None
 
-    if not addresses:
-        st.info(t('ocr_no_addresses'))
-        if show_debug:
-            with st.expander(t('ocr_debug')):
-                if saved_path:
-                    st.write(t('dropbox_path', path=saved_path))
-                st.code(raw, language='json')
-        return False
+        raw: str = ''
+        try:
+            client = _get_openai_client()
+            with st.spinner(t('ocr_extracting')):
+                addresses, raw = extract_addresses_from_image(
+                    client=client,
+                    image_bytes=image_bytes,
+                    mime_type=mime_type,
+                    model=model,
+                )
+        except Exception as exc:
+            st.error(t('ocr_failed', error=str(exc)))
+            return False
 
-    lines = list(addresses)
+        st.session_state['ocr_raw'] = raw
+        st.session_state['ocr_addresses'] = list(addresses or [])
 
-    if overwrite:
-        if duplicate_first_on_overwrite and lines:
+        if not addresses:
+            st.info(t('ocr_no_addresses'))
+            if show_debug:
+                with st.expander(t('ocr_debug')):
+                    saved_path = st.session_state.get('ocr_saved_path')
+                    if saved_path:
+                        st.write(t('dropbox_path', path=saved_path))
+                    st.code(raw, language='json')
+            return False
+
+        lines = list(addresses)
+        if overwrite and duplicate_first_on_overwrite and lines:
             lines = [lines[0]] + lines
-        new_text = '\n'.join(lines).strip()
-        set_addresses_text(new_text)
-    else:
-        new_text = '\n'.join(lines).strip()
-        existing = get_addresses_text().strip()
-        combined = (existing + '\n' + new_text).strip() if existing else new_text
-        set_addresses_text(combined)
 
-    st.success(t('ocr_loaded_n', n=len(lines)))
+        st.session_state['ocr_preview_text'] = '\n'.join(lines).strip()
+
+    # Step 2: Preview + apply (mobile-friendly)
+    st.markdown('---')
+    st.write(t('addresses_label'))
+    preview = st.text_area(
+        label='',
+        value=st.session_state['ocr_preview_text'],
+        height=200,
+        key='ocr_preview_text_area',
+    )
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if st.button(t('apply'), width='stretch'):
+            if overwrite:
+                set_addresses_text(preview.strip())
+            else:
+                existing = get_addresses_text().strip()
+                combined = (existing + '\n' + preview.strip()).strip() if existing else preview.strip()
+                set_addresses_text(combined)
+
+            st.success(t('ocr_loaded_n', n=len(preview.splitlines())))
+            # Cleanup step state
+            for k in (
+                'ocr_photo', 'ocr_preview_text', 'ocr_raw', 'ocr_addresses',
+                'ocr_last_key', 'ocr_saved_path',
+            ):
+                st.session_state.pop(k, None)
+            st.rerun()
+            return True
+
+    with col_b:
+        if st.button(t('cancel'), width='stretch'):
+            for k in (
+                'ocr_photo', 'ocr_preview_text', 'ocr_raw', 'ocr_addresses',
+                'ocr_last_key', 'ocr_saved_path',
+            ):
+                st.session_state.pop(k, None)
+            st.rerun()
+            return False
 
     if show_debug:
         with st.expander(t('ocr_debug')):
+            saved_path = st.session_state.get('ocr_saved_path')
             if saved_path:
                 st.write(t('dropbox_path', path=saved_path))
-            st.code(raw, language='json')
+            st.code(st.session_state.get('ocr_raw', ''), language='json')
 
-    st.rerun()
-    return True
+    return False
 
 
 def addresses_text_area(

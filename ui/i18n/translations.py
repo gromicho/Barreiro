@@ -98,6 +98,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         'debug_dropbox_path': 'Dropbox path: {path}',
         'dropbox_photo_save_failed': 'Dropbox photo save failed (continuing): {error}',
         'ocr_loaded_addresses_ok': 'Loaded {count} addresses into the input box.',
+        'apply': 'Apply',
+        'cancel': 'Cancel',
     },
 
     'nl': {
@@ -189,7 +191,9 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         'debug_dropbox_path': 'Dropbox-pad: {path}',
         'dropbox_photo_save_failed': 'Opslaan van foto in Dropbox mislukt (gaat door): {error}',
         'ocr_loaded_addresses_ok': '{count} adressen in het invoerveld geladen.',
-    },
+        'apply': 'Toepassen',
+        'cancel': 'Annuleren',
+    },    
 
     'pt': {
         # --- existing keys (Portuguese corrected with accents) ---
@@ -282,5 +286,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         'debug_dropbox_path': 'Caminho no Dropbox: {path}',
         'dropbox_photo_save_failed': 'Falha ao guardar a foto no Dropbox (a continuar): {error}',
         'ocr_loaded_addresses_ok': 'Foram carregados {count} endereços na caixa de texto.',
+        'apply': 'Aplicar',
+        'cancel': 'Cancelar',
     },
 }
