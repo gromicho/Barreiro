@@ -1,9 +1,9 @@
-'''
+"""
 Streamlit UI widgets (thin glue).
 
 This module contains small, composable UI widget functions. It should not contain
-routing logic or heavy services—only orchestration of UI + calling services.
-'''
+routing logic or heavy services, only orchestration of UI and calling services.
+"""
 
 from __future__ import annotations
 
@@ -12,9 +12,8 @@ import os
 import streamlit as st
 from openai import OpenAI
 
-from services.address_ocr import extract_addresses_from_image
 from persistence.dropbox_store import save_debug_photo
-
+from services.address_ocr import extract_addresses_from_image
 from ui.drive_handlers import (
     clear_geocoding_cache,
     get_address_versions_for_ui,
@@ -35,13 +34,9 @@ from ui.state_keys import init_state_if_missing
 DEFAULT_OCR_MODEL = 'gpt-4.1-mini'
 
 
-# -----------------------------------------------------------------------------
-# OpenAI client
-# -----------------------------------------------------------------------------
-
 @st.cache_resource(show_spinner=False)
 def _get_openai_client() -> OpenAI:
-    '''
+    """
     Create and cache the OpenAI client.
 
     Returns:
@@ -49,16 +44,12 @@ def _get_openai_client() -> OpenAI:
 
     Raises:
         RuntimeError: If OPENAI_API_KEY is missing.
-    '''
+    """
     api_key = os.getenv('OPENAI_API_KEY', '').strip()
     if not api_key:
         raise RuntimeError('Missing OPENAI_API_KEY')
     return OpenAI(api_key=api_key)
 
-
-# -----------------------------------------------------------------------------
-# Camera OCR (camera-only) + Dropbox debug storage
-# -----------------------------------------------------------------------------
 
 def camera_ocr_widget(
     *,
@@ -69,25 +60,31 @@ def camera_ocr_widget(
     show_debug: bool = False,
     duplicate_first_on_overwrite: bool = False,
 ) -> bool:
-    '''
-    ... (same docstring, add:)
+    """
+    Camera-only OCR widget that extracts addresses from a photo and writes them into
+    the shared addresses text state.
 
     Args:
+        filename: Optional store filename override.
+        model: OCR model name.
+        home_address: Unused here (kept for API compatibility).
+        overwrite: If True, replace addresses text. If False, append.
+        show_debug: If True, show debug expander with raw OCR output.
         duplicate_first_on_overwrite: If True and overwrite=True, duplicate the first
             extracted address by prepending it as the first line.
 
     Returns:
         True if OCR produced addresses and updated state, else False.
-    '''
-    st.subheader('📷 Camera OCR')
+    """
+    _ = home_address  # reserved for future behavior
+    st.subheader(f'📷 {t("camera_ocr_title")}')
 
-    photo = st.camera_input('Take a photo of the address note')
+    photo = st.camera_input(t('camera_ocr_take_photo'))
     if photo is None:
         return False
 
     image_bytes = photo.getvalue()
     mime_type = photo.type or 'image/jpeg'
-
     effective_filename = filename or get_store_filename()
 
     saved_path: str | None = None
@@ -101,13 +98,13 @@ def camera_ocr_widget(
         )
         saved_path = str(saved.get('path') or '') or None
         if show_debug and saved_path:
-            st.caption(f'Saved debug photo: {saved_path}')
+            st.caption(t('saved_debug_photo', path=saved_path))
     except Exception as exc:
-        st.warning(f'Dropbox photo save failed (continuing): {exc}')
+        st.warning(t('dropbox_photo_save_failed', error=str(exc)))
 
     try:
         client = _get_openai_client()
-        with st.spinner('Extracting addresses...'):
+        with st.spinner(t('ocr_extracting')):
             addresses, raw = extract_addresses_from_image(
                 client=client,
                 image_bytes=image_bytes,
@@ -115,24 +112,23 @@ def camera_ocr_widget(
                 model=model,
             )
     except Exception as exc:
-        st.error(f'OCR failed: {exc}')
+        st.error(t('ocr_failed', error=str(exc)))
         return False
 
     if not addresses:
-        st.info('No addresses found.')
+        st.info(t('ocr_no_addresses'))
         if show_debug:
-            with st.expander('OCR debug'):
+            with st.expander(t('ocr_debug')):
                 if saved_path:
-                    st.write(f'Dropbox path: `{saved_path}`')
+                    st.write(t('dropbox_path', path=saved_path))
                 st.code(raw, language='json')
         return False
 
-    lines = addresses[:]
+    lines = list(addresses)
 
     if overwrite:
-        if duplicate_first_on_overwrite and len(addresses) >= 1:
+        if duplicate_first_on_overwrite and lines:
             lines = [lines[0]] + lines
-
         new_text = '\n'.join(lines).strip()
         set_addresses_text(new_text)
     else:
@@ -141,16 +137,17 @@ def camera_ocr_widget(
         combined = (existing + '\n' + new_text).strip() if existing else new_text
         set_addresses_text(combined)
 
-    st.success(f'Loaded {len(lines)} addresses into the input box.')
+    st.success(t('ocr_loaded_n', n=len(lines)))
 
     if show_debug:
-        with st.expander('OCR debug'):
+        with st.expander(t('ocr_debug')):
             if saved_path:
-                st.write(f'Dropbox path: `{saved_path}`')
+                st.write(t('dropbox_path', path=saved_path))
             st.code(raw, language='json')
 
-    st.rerun()  # optional but makes it immediate/obvious
+    st.rerun()
     return True
+
 
 def addresses_text_area(
     *,
@@ -158,13 +155,21 @@ def addresses_text_area(
     height: int = 200,
     key: str = 'addresses_text_area',
 ) -> str:
-    """Render the addresses text area and keep session_state in sync."""
+    """
+    Render the addresses text area and keep session_state in sync.
+
+    Args:
+        label: Optional label override.
+        height: Text area height in pixels.
+        key: Streamlit session_state key for the widget.
+
+    Returns:
+        Current text area value.
+    """
     if label is None:
         label = t('addresses_label')
 
     init_state_if_missing(filename=get_store_filename())
-
-    # Ensure the key exists once (Streamlit will own it afterwards)
     st.session_state.setdefault(key, get_addresses_text())
 
     value = st.text_area(
@@ -185,7 +190,17 @@ def drive_buttons_row(
     width: str = 'stretch',
     rerun_after_reload: bool = True,
 ) -> None:
-    """Render Save/Reload buttons for Drive-backed address persistence."""
+    """
+    Render Save/Reload buttons for Drive-backed address persistence.
+
+    Args:
+        default_text: Text to restore if Drive storage is empty.
+        save_label: Optional button label override for Save.
+        reload_label: Optional button label override for Reload.
+        width: Streamlit button width.
+        rerun_after_reload: If True, rerun after reload.
+    """
+    _ = default_text  # used inside handlers, kept for API symmetry
     if save_label is None:
         save_label = t('save_addresses')
     if reload_label is None:
@@ -218,9 +233,15 @@ def drive_version_loader(
     width: str = 'stretch',
     rerun_after_load: bool = True,
 ) -> None:
-    """UI control to load a specific saved address version.
+    """
+    UI control to load a specific saved address version.
 
     Intended for the "Full" UI only.
+
+    Args:
+        default_text: Text to restore if storage is empty.
+        width: Streamlit button width.
+        rerun_after_load: If True, rerun after load.
     """
     filename = get_store_filename()
     versions = get_address_versions_for_ui(filename=filename)
@@ -245,8 +266,8 @@ def drive_version_loader(
         if ts:
             parts.append(ts)
 
-        label = ' (' + ', '.join(parts[1:]) + ')' if len(parts) > 1 else ''
-        full_label = parts[0] + label
+        label_suffix = ' (' + ', '.join(parts[1:]) + ')' if len(parts) > 1 else ''
+        full_label = parts[0] + label_suffix
 
         options.append(full_label)
         version_by_label[full_label] = ver
@@ -272,7 +293,14 @@ def clear_geocoding_cache_button(
     filename: str = 'capelle_addresses.json',
     width: str = 'stretch',
 ) -> None:
-    """Button that clears geocoding_cache in the Drive store."""
+    """
+    Button that clears geocoding_cache in the Drive store.
+
+    Args:
+        label: Optional label override.
+        filename: Store filename whose cache should be cleared.
+        width: Streamlit button width.
+    """
     if label is None:
         label = t('clear_cache')
 

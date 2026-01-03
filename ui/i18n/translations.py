@@ -1,4 +1,6 @@
-"""Translation dictionaries for the UI (strings may include Unicode accents)."""
+"""
+Translation dictionaries for the UI (strings may include Unicode accents).
+"""
 
 SUPPORTED_LANGS: dict[str, str] = {
     'nl': 'Nederlands',
@@ -8,6 +10,7 @@ SUPPORTED_LANGS: dict[str, str] = {
 
 TRANSLATIONS: dict[str, dict[str, str]] = {
     'en': {
+        # --- existing keys (unchanged) ---
         'addresses_label': 'Addresses (one per line):',
         'app_title': 'Visit route optimization\nprivate use only by {name}\nin {city} region',
         'cache_cleared_ok': 'Geocoding cache cleared.',
@@ -83,8 +86,22 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         'loaded_version_ok': 'Loaded version {version}.',
         'load_version_failed': 'Load failed: {error}',
         'no_versions': 'No saved versions found.',
+
+        # --- widgets.py / camera OCR additions ---
+        'camera_ocr_title': 'Camera OCR',
+        'camera_ocr_take_photo': 'Take a photo of the address note',
+        'ocr_extracting': 'Extracting addresses...',
+        'ocr_failed': 'OCR failed: {error}',
+        'ocr_none_found': 'No addresses found.',
+        'ocr_debug_title': 'OCR debug',
+        'debug_saved_photo': 'Saved debug photo: {path}',
+        'debug_dropbox_path': 'Dropbox path: {path}',
+        'dropbox_photo_save_failed': 'Dropbox photo save failed (continuing): {error}',
+        'ocr_loaded_addresses_ok': 'Loaded {count} addresses into the input box.',
     },
+
     'nl': {
+        # --- existing keys (unchanged) ---
         'addresses_label': 'Adressen (een per regel):',
         'app_title': 'Bezoekroute-optimalisatie\nexclusief voor {name}\neigen gebruik\nin regio {city}',
         'cache_cleared_ok': 'Geocoding cache gewist.',
@@ -160,10 +177,24 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         'loaded_version_ok': 'Versie {version} geladen.',
         'load_version_failed': 'Laden mislukt: {error}',
         'no_versions': 'Geen opgeslagen versies gevonden.',
+
+        # --- widgets.py / camera OCR additions ---
+        'camera_ocr_title': 'Camera OCR',
+        'camera_ocr_take_photo': 'Maak een foto van het adressenbriefje',
+        'ocr_extracting': 'Adressen extraheren...',
+        'ocr_failed': 'OCR mislukt: {error}',
+        'ocr_none_found': 'Geen adressen gevonden.',
+        'ocr_debug_title': 'OCR debug',
+        'debug_saved_photo': 'Debugfoto opgeslagen: {path}',
+        'debug_dropbox_path': 'Dropbox-pad: {path}',
+        'dropbox_photo_save_failed': 'Opslaan van foto in Dropbox mislukt (gaat door): {error}',
+        'ocr_loaded_addresses_ok': '{count} adressen in het invoerveld geladen.',
     },
+
     'pt': {
+        # --- existing keys (Portuguese corrected with accents) ---
         'addresses_label': 'Endereços (um por linha):',
-        'app_title': 'Otimização de rotas de visitas\nuso privado {name}\nregião de {city}',
+        'app_title': 'Otimização de rotas de visitas\nuso privado de {name}\nna região de {city}',
         'cache_cleared_ok': 'Cache de geocodificação limpa.',
         'clear_cache': 'Limpar cache de geocodificação (Dropbox)',
         'clear_failed': 'Falha ao limpar: {error}',
@@ -232,10 +263,24 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         'ui_simple': 'Simples',
         'unreachable_error': 'Locais não alcançáveis detetados: {error}',
         'view_in_maps': 'Ver ponto no Google Maps',
-        'version_label': 'Versoes guardadas',
-        'load_version': 'Carregar versao',
-        'loaded_version_ok': 'Versao {version} carregada.',
+
+        # Corrected accents:
+        'version_label': 'Versões guardadas',
+        'load_version': 'Carregar versão',
+        'loaded_version_ok': 'Versão {version} carregada.',
         'load_version_failed': 'Falha ao carregar: {error}',
-        'no_versions': 'Nao existem versoes guardadas.',
+        'no_versions': 'Não existem versões guardadas.',
+
+        # --- widgets.py / camera OCR additions (Portuguese with accents) ---
+        'camera_ocr_title': 'OCR por câmara',
+        'camera_ocr_take_photo': 'Tire uma foto da nota com os endereços',
+        'ocr_extracting': 'A extrair endereços...',
+        'ocr_failed': 'Falha no OCR: {error}',
+        'ocr_none_found': 'Não foram encontrados endereços.',
+        'ocr_debug_title': 'Depuração do OCR',
+        'debug_saved_photo': 'Foto de depuração guardada: {path}',
+        'debug_dropbox_path': 'Caminho no Dropbox: {path}',
+        'dropbox_photo_save_failed': 'Falha ao guardar a foto no Dropbox (a continuar): {error}',
+        'ocr_loaded_addresses_ok': 'Foram carregados {count} endereços na caixa de texto.',
     },
 }
