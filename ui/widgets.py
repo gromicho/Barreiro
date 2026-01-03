@@ -55,41 +55,40 @@ def camera_ocr_widget(
     *,
     filename: str | None = None,
     model: str = DEFAULT_OCR_MODEL,
+    home_address: str | None = None,
     overwrite: bool = True,
     show_debug: bool = False,
     duplicate_first_on_overwrite: bool = False,
+    key_prefix: str = 'camera_ocr',
 ) -> bool:
     """
     Mobile-friendly camera OCR widget.
 
+    Args:
+        key_prefix: Prefix to namespace Streamlit widget keys and session keys.
+
     Returns:
         True if addresses were applied to state, else False.
     """
+    _ = home_address
+
+    def k(name: str) -> str:
+        return f'{key_prefix}.{name}'
+
     st.subheader(t('camera_ocr_title'))
 
-    if 'ocr_photo' not in st.session_state:
-        st.session_state['ocr_photo'] = None
-    if 'ocr_preview_text' not in st.session_state:
-        st.session_state['ocr_preview_text'] = ''
-
-    photo = st.camera_input(t('camera_ocr_take_photo'), key='camera_ocr_input')
+    photo = st.camera_input(t('camera_ocr_take_photo'), key=k('camera_input'))
     if photo is None:
         return False
 
-    # Keep photo stable across reruns until user applies or cancels
-    st.session_state['ocr_photo'] = photo
-
-    # Extract once per captured image (avoid re-OCR on each rerun)
     image_bytes = photo.getvalue()
     mime_type = photo.type or 'image/jpeg'
 
-    # Simple cache key: length + mime type
     cache_key = (len(image_bytes), mime_type)
-    if st.session_state.get('ocr_last_key') != cache_key:
-        st.session_state['ocr_last_key'] = cache_key
+    if st.session_state.get(k('last_key')) != cache_key:
+        st.session_state[k('last_key')] = cache_key
 
         effective_filename = filename or get_store_filename()
-        saved_path: str | None = None
 
         try:
             saved = save_debug_photo(
@@ -100,10 +99,10 @@ def camera_ocr_widget(
                 make_shared_link=False,
             )
             saved_path = str(saved.get('path') or '') or None
-            st.session_state['ocr_saved_path'] = saved_path
+            st.session_state[k('saved_path')] = saved_path
         except Exception as exc:
             st.warning(t('dropbox_photo_save_failed', error=str(exc)))
-            st.session_state['ocr_saved_path'] = None
+            st.session_state[k('saved_path')] = None
 
         raw: str = ''
         try:
@@ -119,14 +118,14 @@ def camera_ocr_widget(
             st.error(t('ocr_failed', error=str(exc)))
             return False
 
-        st.session_state['ocr_raw'] = raw
-        st.session_state['ocr_addresses'] = list(addresses or [])
+        st.session_state[k('raw')] = raw
+        st.session_state[k('addresses')] = list(addresses or [])
 
         if not addresses:
             st.info(t('ocr_no_addresses'))
             if show_debug:
                 with st.expander(t('ocr_debug')):
-                    saved_path = st.session_state.get('ocr_saved_path')
+                    saved_path = st.session_state.get(k('saved_path'))
                     if saved_path:
                         st.write(t('dropbox_path', path=saved_path))
                     st.code(raw, language='json')
@@ -136,54 +135,46 @@ def camera_ocr_widget(
         if overwrite and duplicate_first_on_overwrite and lines:
             lines = [lines[0]] + lines
 
-        st.session_state['ocr_preview_text'] = '\n'.join(lines).strip()
+        st.session_state[k('preview_text')] = '\n'.join(lines).strip()
 
-    # Step 2: Preview + apply (mobile-friendly)
     st.markdown('---')
-    st.write(t('addresses_label'))
     preview = st.text_area(
-        label='',
-        value=st.session_state['ocr_preview_text'],
+        label=t('addresses_label'),
+        value=str(st.session_state.get(k('preview_text'), '')),
         height=200,
-        key='ocr_preview_text_area',
+        key=k('preview_text_area'),
     )
 
-    col_a, col_b = st.columns(2)
-    with col_a:
-        if st.button(t('apply'), width='stretch'):
-            if overwrite:
-                set_addresses_text(preview.strip())
-            else:
-                existing = get_addresses_text().strip()
-                combined = (existing + '\n' + preview.strip()).strip() if existing else preview.strip()
-                set_addresses_text(combined)
+    apply_clicked = st.button(t('apply'), width='stretch', key=k('apply_btn'))
+    cancel_clicked = st.button(t('cancel'), width='stretch', key=k('cancel_btn'))
 
-            st.success(t('ocr_loaded_n', n=len(preview.splitlines())))
-            # Cleanup step state
-            for k in (
-                'ocr_photo', 'ocr_preview_text', 'ocr_raw', 'ocr_addresses',
-                'ocr_last_key', 'ocr_saved_path',
-            ):
-                st.session_state.pop(k, None)
-            st.rerun()
-            return True
+    if apply_clicked:
+        text_to_apply = preview.strip()
+        if overwrite:
+            set_addresses_text(text_to_apply)
+        else:
+            existing = get_addresses_text().strip()
+            combined = (existing + '\n' + text_to_apply).strip() if existing else text_to_apply
+            set_addresses_text(combined)
 
-    with col_b:
-        if st.button(t('cancel'), width='stretch'):
-            for k in (
-                'ocr_photo', 'ocr_preview_text', 'ocr_raw', 'ocr_addresses',
-                'ocr_last_key', 'ocr_saved_path',
-            ):
-                st.session_state.pop(k, None)
-            st.rerun()
-            return False
+        st.success(t('ocr_loaded_n', n=len([ln for ln in text_to_apply.splitlines() if ln.strip()])))
+        for name in ('last_key', 'saved_path', 'raw', 'addresses', 'preview_text'):
+            st.session_state.pop(k(name), None)
+        st.rerun()
+        return True
+
+    if cancel_clicked:
+        for name in ('last_key', 'saved_path', 'raw', 'addresses', 'preview_text'):
+            st.session_state.pop(k(name), None)
+        st.rerun()
+        return False
 
     if show_debug:
         with st.expander(t('ocr_debug')):
-            saved_path = st.session_state.get('ocr_saved_path')
+            saved_path = st.session_state.get(k('saved_path'))
             if saved_path:
                 st.write(t('dropbox_path', path=saved_path))
-            st.code(st.session_state.get('ocr_raw', ''), language='json')
+            st.code(str(st.session_state.get(k('raw'), '')), language='json')
 
     return False
 

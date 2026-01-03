@@ -156,6 +156,7 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
         ocr_used = camera_ocr_widget(
             filename=cfg.store_filename,
             model='gpt-4.1-mini',
+            key_prefix=f'camera_ocr.{cfg.store_filename}',
             home_address=cfg.home_address,
             overwrite=True,
             show_debug=False,
@@ -166,6 +167,7 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
             ocr_used = camera_ocr_widget(
                 filename=cfg.store_filename,
                 model='gpt-4.1-mini',
+                key_prefix=f'camera_ocr.{cfg.store_filename}',
                 home_address=cfg.home_address,
                 overwrite=True,
                 show_debug=True,
