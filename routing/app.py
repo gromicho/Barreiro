@@ -111,6 +111,28 @@ def _cached_drive_graph(data_dir_str: str, drive_prefix: str) -> tuple[DriveGrap
 
 
 @st.cache_resource(show_spinner=False)
+def _cached_water_union_3857(roi_polygon_3857: Polygon) -> object:
+    """
+    Load OSM water polygons (rivers, estuaries, sea) inside ROI and union them.
+    """
+    import osmnx as ox
+
+    roi_wgs84 = gpd.GeoSeries([roi_polygon_3857], crs=3857).to_crs(epsg=4326).iloc[0]
+
+    tags = {
+        'natural': ['water'],
+        'waterway': ['riverbank'],
+    }
+
+    gdf = ox.geometries_from_polygon(roi_wgs84, tags=tags)
+
+    if gdf.empty:
+        return None
+
+    gdf_3857 = gdf.to_crs(epsg=3857)
+    return unary_union(gdf_3857.geometry)
+
+@st.cache_resource(show_spinner=False)
 def _cached_land_union_3857() -> object:
     """
     Load a land polygon union in EPSG:3857.
@@ -123,31 +145,30 @@ def _cached_land_union_3857() -> object:
     return unary_union(land_3857.geometry)
 
 
-def _clip_polygon_to_land(poly_3857: Polygon, *, land_union_3857: object) -> Polygon:
+def _clip_polygon_to_land_and_remove_water(
+    poly_3857: Polygon,
+    *,
+    land_union_3857: object,
+    water_union_3857: object | None,
+) -> Polygon:
     """
-    Clip a polygon to land only (remove sea/estuaries/lakes from the coverage).
-
-    Args:
-        poly_3857: Coverage polygon in EPSG:3857.
-        land_union_3857: Union geometry of land polygons in EPSG:3857.
-
-    Returns:
-        Polygon clipped to land. If clipping yields empty or non-polygonal result,
-        returns the original polygon.
+    Keep land, remove water (rivers, estuaries, sea).
     """
     try:
-        clipped = poly_3857.intersection(land_union_3857)  # type: ignore[arg-type]
+        geom = poly_3857.intersection(land_union_3857)
+        if water_union_3857 is not None:
+            geom = geom.difference(water_union_3857)
     except Exception:
         return poly_3857
 
-    if getattr(clipped, 'is_empty', True):
+    if geom.is_empty:
         return poly_3857
 
-    if clipped.geom_type == 'Polygon':
-        return clipped
+    if geom.geom_type == 'Polygon':
+        return geom
 
-    if clipped.geom_type == 'MultiPolygon':
-        return max(clipped.geoms, key=lambda g: g.area)
+    if geom.geom_type == 'MultiPolygon':
+        return max(geom.geoms, key=lambda g: g.area)
 
     return poly_3857
 
@@ -652,7 +673,18 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
             if cfg.clip_coverage_to_land:
                 try:
                     land_union = _cached_land_union_3857()
-                    poly = _clip_polygon_to_land(poly, land_union_3857=land_union)
+
+                    water_union = None
+                    if roi_3857 is not None:
+                        water_union = _cached_water_union_3857(
+                            Polygon.from_bounds(*roi_3857)
+                        )
+
+                    poly = _clip_polygon_to_land_and_remove_water(
+                        poly,
+                        land_union_3857=land_union,
+                        water_union_3857=water_union,
+                    )
                 except Exception as exc:
                     st.warning(t('graph_coverage_landclip_error', error=str(exc)))
 
