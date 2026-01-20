@@ -7,6 +7,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import streamlit as st
+from shapely.geometry import Point
+from shapely.ops import unary_union
 
 from services.geocoding import GeocodingError, geocode_addresses
 from routing.drive_network import (
@@ -100,7 +102,7 @@ def _summarize_address_label(address: str) -> str:
         address: Full address string.
 
     Returns:
-        Shortened label suitable for row headers.
+        Shortened label suitable for UI labels.
     """
     parts = [p.strip() for p in address.split(',') if p.strip()]
     if not parts:
@@ -132,8 +134,7 @@ def _distance_matrix_to_km(dist_matrix: list[list[float]]) -> np.ndarray:
     """
     Convert a distance matrix to kilometers using a robust heuristic for units.
 
-    We don't fully trust units coming from downstream code: some pipelines return meters,
-    others may already return kilometers. Heuristic:
+    Some pipelines return meters, others may return kilometers. Heuristic:
     - If the median of non-zero entries is > 200, treat as meters and divide by 1000.
     - Otherwise, treat as kilometers.
 
@@ -144,7 +145,6 @@ def _distance_matrix_to_km(dist_matrix: list[list[float]]) -> np.ndarray:
         NumPy array with distances in kilometers.
     """
     a = np.array(dist_matrix, dtype=float)
-
     nonzero = a[a > 0]
     if nonzero.size == 0:
         return a
@@ -185,8 +185,7 @@ def _build_input_addresses(*, cfg: RoutingAppConfig, addresses_text: str, ocr_us
     Build the final address list used for routing.
 
     Rules:
-    - If OCR was used (instead of typing/pasting), prepend the first OCR address again.
-      (Keeps the same 'first address repeated' behavior.)
+    - If OCR was used, prepend the first OCR address again (keep existing behavior).
     - Always include the instance-specific home address as the first address.
     - Avoid obvious duplicates of home at the top.
 
@@ -230,6 +229,73 @@ def _ensure_closed[T](items: list[T]) -> list[T]:
     return items + [items[0]]
 
 
+def _coverage_polygon_xy_buffer_union(
+    xs: list[float],
+    ys: list[float],
+    *,
+    radius_m: float,
+) -> list[tuple[float, float]]:
+    """
+    Build a 'coverage' boundary as the exterior of a union of equal-radius buffers.
+
+    This produces an isogone-like shape: it is the boundary of the region within `radius_m`
+    of at least one point (in the projected coordinate system).
+
+    Args:
+        xs: x coordinates (EPSG:3857 meters).
+        ys: y coordinates (EPSG:3857 meters).
+        radius_m: Buffer radius in meters.
+
+    Returns:
+        Exterior coordinates (x, y) of the resulting polygon.
+        If the union is empty, returns [].
+    """
+    if radius_m <= 0 or not xs or not ys:
+        return []
+
+    geoms = [Point(float(x), float(y)).buffer(float(radius_m)) for x, y in zip(xs, ys)]
+    union = unary_union(geoms)
+    if union.is_empty:
+        return []
+
+    if union.geom_type == 'MultiPolygon':
+        union = max(union.geoms, key=lambda g: g.area)
+
+    coords = list(union.exterior.coords)
+    return [(float(x), float(y)) for x, y in coords]
+
+
+def _overlay_coverage_on_fig(
+    fig: object,
+    *,
+    snapped_node_ids_for_points: list[int],
+    nodes: DriveNodes,
+    radius_km: float,
+) -> None:
+    """
+    Overlay a coverage boundary on an existing matplotlib figure.
+
+    Args:
+        fig: Matplotlib figure returned by make_matplotlib_route_map.
+        snapped_node_ids_for_points: Node ids in the same order as the input points.
+        nodes: Nodes lookup used by snapped_nodes_xy_3857.
+        radius_km: Buffer radius in kilometers.
+    """
+    if radius_km <= 0:
+        return
+
+    ax = fig.axes[0]
+
+    xs, ys = snapped_nodes_xy_3857(snapped_node_ids_for_points, nodes)
+    coords = _coverage_polygon_xy_buffer_union(xs, ys, radius_m=radius_km * 1000.0)
+    if not coords:
+        return
+
+    hx = [p[0] for p in coords]
+    hy = [p[1] for p in coords]
+    ax.plot(hx, hy, linewidth=2.0, alpha=0.85)
+
+
 def run_routing_app(*, cfg: RoutingAppConfig) -> None:
     """Run the shared Streamlit routing app for the given configuration."""
     _setup_logging(logfile=cfg.logfile)
@@ -249,6 +315,9 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
     simple_mode = ui_mode_label == t('ui_simple')
 
     show_road_overlay = False
+    show_coverage = False
+    coverage_radius_km = 2.0
+
     if not simple_mode:
         overlay_label = st.radio(
             t('road_overlay'),
@@ -258,13 +327,25 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
         )
         show_road_overlay = overlay_label == t('on')
 
+        show_coverage = st.checkbox(
+            'Toon dekking (isogoon-achtig)',
+            value=False,
+            help='Tekent de buitenrand van de unie van buffers rond de gesnapte punten.',
+        )
+        coverage_radius_km = st.slider(
+            'Dekkingsradius (km)',
+            min_value=0.5,
+            max_value=25.0,
+            value=2.0,
+            step=0.5,
+        )
+
     if not simple_mode:
         st.markdown(t('instructions'))
 
     default_text = ''
     ensure_addresses_loaded(default_text=default_text, filename=cfg.store_filename)
 
-    # Camera OCR: optional, debug shown only in Full UI.
     if simple_mode:
         ocr_used = camera_ocr_widget(
             filename=cfg.store_filename,
@@ -386,7 +467,6 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
             st.error(t('snap_error', error=str(exc)))
             return
 
-        # Full UI: show geocoded + snapping overview (includes snap distances)
         if not simple_mode:
             st.subheader('Geocoded + snapping (overview)')
             snap_km = np.array(snapped_distances_m, dtype=float) / 1000.0
@@ -433,13 +513,11 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
             st.error(t('unreachable_error', error=str(exc)))
             return
 
-        # Symmetrize and normalize matrix (units unknown: could be meters or km)
         c = np.array(dist_matrix_raw, dtype=float)
         c = 0.5 * (c + c.T)
         np.fill_diagonal(c, 0.0)
         dist_matrix = c.tolist()
 
-        # Full UI: show distance matrix with requested labels/format
         if not simple_mode:
             with st.expander('Afstandsmatrix (km)', expanded=False):
                 dist_df = _build_distance_matrix_df_km(dist_matrix, addresses)
@@ -545,6 +623,21 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
                 snapped_xs=snapped_xs_opt,
                 snapped_ys=snapped_ys_opt,
             )
+
+            if show_coverage:
+                base_node_ids = snapped_node_ids[:]  # input order, no closure duplication
+                _overlay_coverage_on_fig(
+                    fig_orig,
+                    snapped_node_ids_for_points=base_node_ids,
+                    nodes=nodes,
+                    radius_km=float(coverage_radius_km),
+                )
+                _overlay_coverage_on_fig(
+                    fig_opt,
+                    snapped_node_ids_for_points=base_node_ids,
+                    nodes=nodes,
+                    radius_km=float(coverage_radius_km),
+                )
 
             col_l, col_r = st.columns(2)
             with col_l:
