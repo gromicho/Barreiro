@@ -11,6 +11,18 @@ import streamlit as st
 import matplotlib.pyplot as plt
 from shapely.geometry import MultiPoint, Polygon
 
+# Shapely (latest) concave hull API (keep a robust fallback)
+try:
+    from shapely import concave_hull as _shapely_concave_hull  # shapely >= 2.0
+except Exception:  # pragma: no cover
+    _shapely_concave_hull = None
+
+# Basemap tiles (your route map likely uses something similar internally; this gives us tiled coverage too)
+try:
+    import contextily as ctx  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover
+    ctx = None
+
 from services.geocoding import GeocodingError, geocode_addresses
 from routing.drive_network import (
     assert_all_pairs_reachable,
@@ -59,6 +71,10 @@ class RoutingAppConfig:
     roi_bbox_wgs84: tuple[float, float, float, float] | None = None
     roi_name: str | None = None
 
+    # Concave hull control (no UI slider; set per instance)
+    # ratio in (0, 1]. Smaller => more concave. 1.0 ~ convex hull.
+    coverage_concavity_ratio: float = 0.25
+
     data_dir: Path = Path('data')
     logfile: str = LOGFILE_DEFAULT
     max_snap_distance_m: float = MAX_SNAP_DISTANCE_M_DEFAULT
@@ -99,11 +115,6 @@ def _summarize_address_label(address: str) -> str:
     """
     Produce a compact address label for UI.
 
-    Heuristic:
-    - Split on commas.
-    - Remove a trailing country token for common cases.
-    - Join remaining parts.
-
     Args:
         address: Full address string.
 
@@ -140,12 +151,8 @@ def _distance_matrix_to_km(dist_matrix: list[list[float]]) -> np.ndarray:
     """
     Convert a distance matrix to kilometers using a robust heuristic for units.
 
-    Some pipelines return meters, others may return kilometers. Heuristic:
-    - If the median of non-zero entries is > 200, treat as meters and divide by 1000.
-    - Otherwise, treat as kilometers.
-
     Args:
-        dist_matrix: Square matrix of distances in unknown units.
+        dist_matrix: Square matrix of distances in unknown units (meters or km).
 
     Returns:
         NumPy array with distances in kilometers.
@@ -166,11 +173,6 @@ def _build_distance_matrix_df_km(dist_matrix_raw_units: list[list[float]], addre
     """
     Build a DataFrame to display a distance matrix in Streamlit.
 
-    Requirements:
-    - Row labels: '{i}. {summarized_address}'.
-    - Column labels: indices only, 1..n (same order).
-    - Values: kilometers, rounded to 1 decimal.
-
     Args:
         dist_matrix_raw_units: Distance matrix in unknown units (meters or km).
         addresses: Addresses in the same order as the matrix rows.
@@ -189,11 +191,6 @@ def _build_distance_matrix_df_km(dist_matrix_raw_units: list[list[float]], addre
 def _build_input_addresses(*, cfg: RoutingAppConfig, addresses_text: str, ocr_used: bool) -> list[str]:
     """
     Build the final address list used for routing.
-
-    Rules:
-    - If OCR was used, prepend the first OCR address again (keep existing behavior).
-    - Always include the instance-specific home address as the first address.
-    - Avoid obvious duplicates of home at the top.
 
     Args:
         cfg: Routing app configuration (includes home_address).
@@ -333,25 +330,66 @@ def _estimate_edge_length_m(graph: object, *, sample_size: int = 5000) -> float 
     return float(np.median(np.array(lengths, dtype=float)))
 
 
+def _concave_or_convex_hull(points: MultiPoint, *, ratio: float) -> Polygon | None:
+    """
+    Compute a concave hull (preferred) with a safe convex fallback.
+
+    Args:
+        points: MultiPoint in EPSG:3857.
+        ratio: Concavity ratio in (0, 1]. Lower => more concave. 1 => convex-ish.
+
+    Returns:
+        Polygon or None.
+    """
+    if points.is_empty:
+        return None
+
+    r = float(ratio)
+    if not (0.0 < r <= 1.0):
+        r = 0.25
+
+    if _shapely_concave_hull is not None:
+        try:
+            geom = _shapely_concave_hull(points, r)
+            if geom.is_empty:
+                return None
+            if geom.geom_type == 'Polygon':
+                return geom
+            if geom.geom_type == 'MultiPolygon':
+                return max(geom.geoms, key=lambda g: g.area)
+        except Exception:
+            pass
+
+    # Fallback: convex hull
+    hull = points.convex_hull
+    if hull.is_empty:
+        return None
+    if hull.geom_type == 'Polygon':
+        return hull
+    return None
+
+
 def _graph_coverage_polygon_xy_3857(
     *,
     graph: object,
     nodes: DriveNodes,
     roi_bbox_3857: tuple[float, float, float, float] | None,
+    concavity_ratio: float,
 ) -> Polygon | None:
     """
     Build a coverage polygon for the graph based on its nodes and edges.
 
-    Strategy (fast + robust):
+    Strategy:
     1) Take node coordinates (EPSG:3857).
     2) If ROI is provided, restrict to nodes inside ROI.
-    3) Compute convex hull of the selected nodes (area including all selected nodes).
+    3) Compute concave hull (preferred) else convex hull.
     4) Buffer by an automatically-derived distance using median edge length.
 
     Args:
         graph: Drive graph.
         nodes: Nodes lookup compatible with snapped_nodes_xy_3857.
         roi_bbox_3857: Optional ROI bbox in EPSG:3857 (min_x, min_y, max_x, max_y).
+        concavity_ratio: Concave hull ratio in (0, 1].
 
     Returns:
         A Shapely Polygon in EPSG:3857, or None if it cannot be constructed.
@@ -375,32 +413,29 @@ def _graph_coverage_polygon_xy_3857(
             return None
 
         xs, ys = snapped_nodes_xy_3857(keep_ids, nodes)
-        node_ids = keep_ids
 
     pts = MultiPoint([(float(x), float(y)) for x, y in zip(xs, ys)])
-    if pts.is_empty:
+    poly = _concave_or_convex_hull(pts, ratio=concavity_ratio)
+    if poly is None:
         return None
 
-    hull = pts.convex_hull
-    if hull.is_empty:
-        return None
-
+    # Edges influence: choose a stable buffer based on typical edge length (meters).
     edge_med_m = _estimate_edge_length_m(graph)
     if edge_med_m is None:
         buffer_m = 250.0
     else:
         buffer_m = float(np.clip(0.75 * edge_med_m, 75.0, 1500.0))
 
-    poly = hull.buffer(buffer_m)
+    buffered = poly.buffer(buffer_m)
 
-    if poly.geom_type == 'Polygon':
-        return poly
-    if poly.geom_type == 'MultiPolygon':
-        return max(poly.geoms, key=lambda g: g.area)
+    if buffered.geom_type == 'Polygon':
+        return buffered
+    if buffered.geom_type == 'MultiPolygon':
+        return max(buffered.geoms, key=lambda g: g.area)
     return None
 
 
-def _make_matplotlib_graph_coverage_map(
+def _make_tiled_coverage_figure(
     *,
     poly_3857: Polygon,
     title: str,
@@ -410,7 +445,9 @@ def _make_matplotlib_graph_coverage_map(
     max_scatter_points: int = 4000,
 ) -> object:
     """
-    Make a dedicated matplotlib figure showing the graph coverage polygon (and optionally nodes).
+    Create a map with basemap tiles and overlay the coverage polygon + (optional) nodes.
+
+    Uses EPSG:3857 so it matches typical web tiles.
 
     Args:
         poly_3857: Coverage polygon in EPSG:3857.
@@ -426,9 +463,33 @@ def _make_matplotlib_graph_coverage_map(
     fig, ax = plt.subplots(figsize=(9, 7))
     ax.set_title(title)
 
-    x, y = poly_3857.exterior.xy
-    ax.plot(x, y, linewidth=2.0, alpha=0.9)
+    # Set extent first so the basemap fetches the right area
+    minx, miny, maxx, maxy = poly_3857.bounds
+    pad_x = 0.05 * (maxx - minx) if maxx > minx else 250.0
+    pad_y = 0.05 * (maxy - miny) if maxy > miny else 250.0
 
+    ax.set_xlim(minx - pad_x, maxx + pad_x)
+    ax.set_ylim(miny - pad_y, maxy + pad_y)
+
+    if roi_bbox_3857 is not None:
+        rminx, rminy, rmaxx, rmaxy = roi_bbox_3857
+        ax.set_xlim(rminx, rmaxx)
+        ax.set_ylim(rminy, rmaxy)
+
+    # Tiles
+    if ctx is not None:
+        try:
+            ctx.add_basemap(
+                ax,
+                crs='EPSG:3857',
+                source=ctx.providers.OpenStreetMap.Mapnik,
+                attribution=False,
+            )
+        except Exception:
+            # Keep going without tiles if it fails (offline, rate-limited, etc.)
+            pass
+
+    # Nodes (light scatter)
     node_ids = _iter_node_ids_from_graph(graph)
     if node_ids:
         if len(node_ids) > max_scatter_points:
@@ -439,10 +500,9 @@ def _make_matplotlib_graph_coverage_map(
         if xs and ys:
             ax.scatter(xs, ys, s=2, alpha=0.25)
 
-    if roi_bbox_3857 is not None:
-        min_x, min_y, max_x, max_y = roi_bbox_3857
-        ax.set_xlim(min_x, max_x)
-        ax.set_ylim(min_y, max_y)
+    # Polygon outline on top
+    x, y = poly_3857.exterior.xy
+    ax.plot(x, y, linewidth=2.0, alpha=0.9)
 
     ax.set_aspect('equal', adjustable='box')
     ax.axis('off')
@@ -531,7 +591,7 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
     )
     is_closed = route_type_label == t('route_closed')
 
-    # --- NEW: dedicated graph coverage map BEFORE any computations ---
+    # --- Graph coverage map FIRST (tiles + concave hull), before any optimization computations ---
     graph: DriveGraph | None = None
     nodes: DriveNodes | None = None
     roi_3857 = _roi_bbox_3857(cfg)
@@ -540,16 +600,23 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
         with st.spinner(t('loading_network')):
             graph, nodes = _cached_drive_graph(str(cfg.data_dir), cfg.drive_prefix)
 
-        poly = _graph_coverage_polygon_xy_3857(graph=graph, nodes=nodes, roi_bbox_3857=roi_3857)
-        if poly is not None:
-            subtitle = t('graph_coverage_subtitle')
-            if cfg.roi_name:
-                subtitle = t('graph_coverage_subtitle_roi', roi=cfg.roi_name)
+        poly = _graph_coverage_polygon_xy_3857(
+            graph=graph,
+            nodes=nodes,
+            roi_bbox_3857=roi_3857,
+            concavity_ratio=float(cfg.coverage_concavity_ratio),
+        )
 
+        if poly is None:
+            st.warning(t('graph_coverage_failed'))
+        else:
             st.subheader(t('graph_coverage_title'))
-            st.caption(subtitle)
+            if cfg.roi_name:
+                st.caption(t('graph_coverage_subtitle_roi', roi=cfg.roi_name))
+            else:
+                st.caption(t('graph_coverage_subtitle'))
 
-            fig_cov = _make_matplotlib_graph_coverage_map(
+            fig_cov = _make_tiled_coverage_figure(
                 poly_3857=poly,
                 title=t('graph_coverage_map_title'),
                 graph=graph,
@@ -557,8 +624,6 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
                 roi_bbox_3857=roi_3857,
             )
             st.pyplot(fig_cov, width='stretch')
-        else:
-            st.warning(t('graph_coverage_failed'))
     except Exception as exc:
         st.warning(t('graph_coverage_error', error=str(exc)))
 
@@ -582,7 +647,6 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
             return
 
         try:
-            # Reuse already-loaded graph if available, otherwise load now.
             if graph is None or nodes is None:
                 with st.spinner(t('loading_network')):
                     with timeblock('Loading drive graph', logs):
@@ -824,3 +888,17 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
         with st.expander(t('timinglog_expander')):
             for line in logs:
                 st.write(line)
+
+
+# i18n keys you need in your translations (so you do not see raw keys in UI):
+# 'camera_ocr_expander'
+# 'graph_coverage_title'
+# 'graph_coverage_subtitle'
+# 'graph_coverage_subtitle_roi' (expects {roi})
+# 'graph_coverage_map_title'
+# 'graph_coverage_failed'
+# 'graph_coverage_error' (expects {error})
+# 'snapping_overview_title'
+# 'snap_dist_km_col'
+# 'too_far_list_title'
+# 'dist_matrix_expander'
