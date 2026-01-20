@@ -106,6 +106,203 @@ class OptimizationResult:
     logs: list[str]
 
 
+def _parse_addresses(text: str) -> list[str]:
+    """Parse non-empty address lines from a text blob."""
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _summarize_address_label(address: str) -> str:
+    """Produce a compact address label for UI."""
+    parts = [p.strip() for p in address.split(",") if p.strip()]
+    if not parts:
+        return address.strip()
+
+    trailing_countries = {
+        "portugal",
+        "the netherlands",
+        "netherlands",
+        "nederland",
+        "belgium",
+        "belgië",
+        "spain",
+        "españa",
+        "france",
+        "germany",
+        "deutschland",
+        "luxembourg",
+        "luxemburg",
+    }
+
+    if parts[-1].casefold() in trailing_countries and len(parts) >= 2:
+        parts = parts[:-1]
+
+    return ", ".join(parts)
+
+
+def _build_input_addresses(*, cfg: RoutingAppConfig, addresses_text: str) -> list[str]:
+    """
+    Build the final address list used for routing.
+
+    Rules:
+    - Parse non-empty lines.
+    - Prepend home exactly once (always at index 0 if set).
+    - Remove exact duplicates while preserving order.
+    """
+    raw = _parse_addresses(addresses_text)
+
+    home = cfg.home_address.strip()
+    combined: list[str] = []
+    if home:
+        combined.append(home)
+    combined.extend(raw)
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for a in combined:
+        key = a.strip()
+        if not key:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+
+    return out if out else ([home] if home else [])
+
+
+import difflib
+import re
+
+
+_NEAR_DUPLICATE_THRESHOLD: float = 0.92
+
+
+def _ensure_closed(items: list[object]) -> list[object]:
+    """
+    Ensure a route list is closed by repeating the first element at the end.
+
+    Args:
+        items: Sequence representing a route.
+
+    Returns:
+        Closed route sequence.
+    """
+    if len(items) >= 2 and items[0] == items[-1]:
+        return items
+    if not items:
+        return items
+    return items + [items[0]]
+
+
+def _distance_matrix_to_km(dist_matrix: list[list[float]]) -> np.ndarray:
+    """
+    Convert a distance matrix to kilometers using a robust heuristic for units.
+
+    Args:
+        dist_matrix: Square matrix of distances in unknown units (meters or km).
+
+    Returns:
+        NumPy array with distances in kilometers.
+    """
+    a = np.array(dist_matrix, dtype=float)
+    nonzero = a[a > 0]
+    if nonzero.size == 0:
+        return a
+
+    med = float(np.median(nonzero))
+    # Heuristic: if median > 200, it's probably meters
+    if med > 200.0:
+        return a / 1000.0
+    return a
+
+
+def _build_distance_matrix_df_km(dist_matrix_raw_units: list[list[float]], addresses: list[str]) -> pd.DataFrame:
+    """
+    Build a DataFrame to display a distance matrix in Streamlit.
+
+    Args:
+        dist_matrix_raw_units: Distance matrix in unknown units (meters or km).
+        addresses: Addresses in the same order as the matrix rows.
+
+    Returns:
+        DataFrame with km values rounded to 1 decimal.
+    """
+    n = len(dist_matrix_raw_units)
+    row_labels = [f"{i}. {_summarize_address_label(a)}" for i, a in enumerate(addresses, start=1)]
+    col_labels = [str(i) for i in range(1, n + 1)]
+    km = _distance_matrix_to_km(dist_matrix_raw_units).round(1)
+    return pd.DataFrame(km, index=row_labels, columns=col_labels)
+
+
+def _normalize_address_line(line: str) -> str:
+    """
+    Normalize a single OCR/text line to reduce junk.
+
+    Removes bullets/numbering, collapses whitespace, trims punctuation.
+    """
+    s = line.strip()
+    s = re.sub(r"^\s*([-\u2022*]|(\d+\s*[\).\:-]))\s*", "", s)  # leading bullets/numbering
+    s = re.sub(r"\s+", " ", s)  # collapse whitespace
+    s = s.strip(" ,;")  # trim trailing separators
+    return s
+
+
+def _similar(a: str, b: str) -> float:
+    """Return similarity ratio in [0, 1] using stdlib difflib."""
+    return difflib.SequenceMatcher(None, a.casefold(), b.casefold()).ratio()
+
+
+@dataclass(frozen=True)
+class AddressRow:
+    """One address candidate with provenance and normalization."""
+
+    captured: str
+    final: str
+    include: bool
+    note: str = ""
+
+
+def _reconcile_addresses(lines: list[str], *, home_address: str) -> list[AddressRow]:
+    """
+    Build a reconciliation list from raw lines.
+
+    - Normalizes each line
+    - Excludes empty lines
+    - Excludes 'home-like' entries
+    - Excludes near-duplicates (keeps first occurrence)
+    """
+    cleaned = [_normalize_address_line(x) for x in lines]
+    cleaned = [c for c in cleaned if c]
+
+    rows: list[AddressRow] = []
+    home = home_address.strip()
+
+    for c in cleaned:
+        include = True
+        note = ""
+        if home and _similar(c, home) >= _NEAR_DUPLICATE_THRESHOLD:
+            include = False
+            note = "Looks like home address (excluded)"
+        rows.append(AddressRow(captured=c, final=c, include=include, note=note))
+
+    # Near-duplicate filtering
+    for i in range(len(rows)):
+        if not rows[i].include:
+            continue
+        for j in range(i + 1, len(rows)):
+            if not rows[j].include:
+                continue
+            if _similar(rows[i].final, rows[j].final) >= _NEAR_DUPLICATE_THRESHOLD:
+                rows[j] = AddressRow(
+                    captured=rows[j].captured,
+                    final=rows[j].final,
+                    include=False,
+                    note=f"Near-duplicate of row {i + 1} (excluded)",
+                )
+
+    return rows
+
+
 def _set_addresses_text_in_state(text: str) -> None:
     """
     Best-effort: write address text back into session state.
