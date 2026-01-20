@@ -111,26 +111,36 @@ def _cached_drive_graph(data_dir_str: str, drive_prefix: str) -> tuple[DriveGrap
 
 
 @st.cache_resource(show_spinner=False)
-def _cached_water_union_3857(roi_polygon_3857: Polygon) -> object:
+def _cached_water_union_3857(roi_polygon_3857: Polygon) -> object | None:
     """
     Load OSM water polygons (rivers, estuaries, sea) inside ROI and union them.
+    Compatible with modern osmnx versions.
     """
     import osmnx as ox
+    import geopandas as gpd
 
-    roi_wgs84 = gpd.GeoSeries([roi_polygon_3857], crs=3857).to_crs(epsg=4326).iloc[0]
+    roi_wgs84 = (
+        gpd.GeoSeries([roi_polygon_3857], crs=3857)
+        .to_crs(epsg=4326)
+        .iloc[0]
+    )
 
     tags = {
-        'natural': ['water'],
-        'waterway': ['riverbank'],
+        'natural': 'water',
+        'waterway': 'riverbank',
     }
 
-    gdf = ox.geometries_from_polygon(roi_wgs84, tags=tags)
+    try:
+        gdf = ox.features_from_polygon(roi_wgs84, tags=tags)
+    except Exception:
+        return None
 
     if gdf.empty:
         return None
 
     gdf_3857 = gdf.to_crs(epsg=3857)
     return unary_union(gdf_3857.geometry)
+
 
 @st.cache_resource(show_spinner=False)
 def _cached_land_union_3857() -> object:
