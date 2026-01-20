@@ -61,11 +61,19 @@ def camera_ocr_widget(
     duplicate_first_on_overwrite: bool = False,
     key_prefix: str = 'camera_ocr',
 ) -> bool:
-    '''
+    """
     Mobile-friendly camera OCR widget.
 
-    Hides the Streamlit camera preview after a photo is captured (better UX on phones),
-    and shows the captured image full-width instead.
+    Notes on focus:
+        `st.camera_input` delegates capture to the mobile browser's camera UI.
+        Streamlit cannot force autofocus, macro mode, or resolution via constraints here.
+        This widget therefore provides UX hints and an upload fallback.
+
+    Behavior:
+        - Captures an image via `st.camera_input` (or uses cached bytes).
+        - Shows the captured image full-width.
+        - Extracts addresses via OCR, then shows an editable preview.
+        - Applies preview text into the addresses textarea (overwrite or append).
 
     Args:
         filename: Store filename for persistence/debug.
@@ -78,28 +86,63 @@ def camera_ocr_widget(
 
     Returns:
         True if addresses were applied to state, else False.
-    '''
+    """
     _ = home_address
 
     def k(name: str) -> str:
-        '''Build a stable namespaced key for Streamlit session/widget state.'''
+        """Build a stable namespaced key for Streamlit session/widget state."""
         return f'{key_prefix}.{name}'
+
+    def _label(key: str, fallback: str) -> str:
+        """
+        Best-effort i18n label getter.
+
+        Uses `t(key)` if available; falls back to provided string if key is missing
+        or if `t` raises for any reason.
+        """
+        try:
+            val = t(key)
+            if isinstance(val, str) and val.strip():
+                return val
+        except Exception:
+            pass
+        return fallback
 
     st.subheader(t('camera_ocr_title'))
 
-    # This flag controls whether we keep showing the camera widget after capture.
+    # Practical focusing tips (since we cannot control autofocus via st.camera_input constraints)
+    with st.expander(_label('camera_focus_help', 'Having trouble focusing?'), expanded=False):
+        st.markdown(
+            '- Tap on the text to focus/expose.\n'
+            '- Add more light (lamp / window) and avoid glare.\n'
+            '- Move the phone a little farther away, then slowly closer.\n'
+            '- Try 2× zoom instead of moving very close (helps minimum focus distance).\n'
+            '- Hold still for 1–2 seconds after tapping to let autofocus settle.\n'
+        )
+
     if k('hide_camera_after_capture') not in st.session_state:
         st.session_state[k('hide_camera_after_capture')] = True
 
     hide_camera_after_capture = bool(st.session_state.get(k('hide_camera_after_capture'), True))
 
-    # If we already have an image cached in session_state, do NOT show the camera widget again.
-    # This prevents the narrow preview from staying on screen on mobile.
-    image_bytes: bytes | None = st.session_state.get(k("image_bytes"))
-    mime_type: str = st.session_state.get(k("mime_type"), "image/jpeg")
+    # Cached image bytes (avoid keeping the narrow preview on screen)
+    image_bytes: bytes | None = st.session_state.get(k('image_bytes'))
+    mime_type: str = str(st.session_state.get(k('mime_type'), 'image/jpeg'))
+
+    # Optional upload fallback (often yields higher-res than some browser camera previews)
+    uploaded = st.file_uploader(
+        _label('camera_ocr_upload_fallback', 'Or upload a photo'),
+        type=['jpg', 'jpeg', 'png', 'webp'],
+        key=k('upload_fallback'),
+    )
+    if uploaded is not None:
+        image_bytes = uploaded.getvalue()
+        mime_type = uploaded.type or 'image/jpeg'
+        st.session_state[k('image_bytes')] = image_bytes
+        st.session_state[k('mime_type')] = mime_type
 
     photo = None
-    if not (hide_camera_after_capture and image_bytes):
+    if uploaded is None and not (hide_camera_after_capture and image_bytes):
         photo = st.camera_input(t('camera_ocr_take_photo'), key=k('camera_input'))
 
     if photo is None and image_bytes is None:
@@ -111,12 +154,16 @@ def camera_ocr_widget(
         st.session_state[k('image_bytes')] = image_bytes
         st.session_state[k('mime_type')] = mime_type
 
-    # Show captured photo in full width
+    # Show captured photo full width
     if image_bytes is not None:
         st.image(image_bytes, use_container_width=True)
 
     # Allow retake (shows the camera widget again)
-    retake_clicked = st.button(t('retake') if 'retake' in t.__code__.co_consts else 'Retake photo', width='stretch', key=k('retake_btn'))
+    retake_clicked = st.button(
+        _label('retake', 'Retake photo'),
+        width='stretch',
+        key=k('retake_btn'),
+    )
     if retake_clicked:
         for name in ('image_bytes', 'mime_type', 'last_key', 'saved_path', 'raw', 'addresses', 'preview_text'):
             st.session_state.pop(k(name), None)
@@ -190,6 +237,20 @@ def camera_ocr_widget(
     apply_clicked = st.button(t('apply'), width='stretch', key=k('apply_btn'))
     cancel_clicked = st.button(t('cancel'), width='stretch', key=k('cancel_btn'))
 
+    def _clear_state() -> None:
+        """Clear widget-related session state keys."""
+        for name in (
+            'hide_camera_after_capture',
+            'image_bytes',
+            'mime_type',
+            'last_key',
+            'saved_path',
+            'raw',
+            'addresses',
+            'preview_text',
+        ):
+            st.session_state.pop(k(name), None)
+
     if apply_clicked:
         text_to_apply = preview.strip()
         if overwrite:
@@ -200,35 +261,12 @@ def camera_ocr_widget(
             set_addresses_text(combined)
 
         st.success(t('ocr_loaded_n', n=len([ln for ln in text_to_apply.splitlines() if ln.strip()])))
-
-        for name in (
-            'hide_camera_after_capture',
-            'image_bytes',
-            'mime_type',
-            'last_key',
-            'saved_path',
-            'raw',
-            'addresses',
-            'preview_text',
-        ):
-            st.session_state.pop(k(name), None)
-
+        _clear_state()
         st.rerun()
         return True
 
     if cancel_clicked:
-        for name in (
-            'hide_camera_after_capture',
-            'image_bytes',
-            'mime_type',
-            'last_key',
-            'saved_path',
-            'raw',
-            'addresses',
-            'preview_text',
-        ):
-            st.session_state.pop(k(name), None)
-
+        _clear_state()
         st.rerun()
         return False
 
