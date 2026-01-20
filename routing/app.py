@@ -40,6 +40,22 @@ LOGFILE_DEFAULT: str = "routing_time_log.txt"
 MAX_SNAP_DISTANCE_M_DEFAULT: float = 5000.0
 
 
+def _setup_logging(*, logfile: str) -> None:
+    """Configure logging once per process."""
+    if getattr(_setup_logging, "_configured", False):
+        return
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[
+            logging.FileHandler(logfile, mode="a", encoding="utf-8"),
+            logging.StreamHandler(),
+        ],
+    )
+    setattr(_setup_logging, "_configured", True)
+
+
 @dataclass(frozen=True)
 class RoutingAppConfig:
     """Configuration for a routing app instance."""
