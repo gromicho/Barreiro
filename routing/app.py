@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import difflib
 import logging
-from pathlib import Path
 import math
+from pathlib import Path
+import re
 
 import numpy as np
 import pandas as pd
@@ -55,6 +57,8 @@ from ui.widgets import (
 LOGFILE_DEFAULT: str = 'routing_time_log.txt'
 MAX_SNAP_DISTANCE_M_DEFAULT: float = 5000.0
 
+_NEAR_DUPLICATE_THRESHOLD: float = 0.92
+
 
 @dataclass(frozen=True)
 class RoutingAppConfig:
@@ -82,6 +86,16 @@ class RoutingAppConfig:
     data_dir: Path = Path('data')
     logfile: str = LOGFILE_DEFAULT
     max_snap_distance_m: float = MAX_SNAP_DISTANCE_M_DEFAULT
+
+
+@dataclass(frozen=True)
+class AddressRow:
+    """One address candidate with provenance and normalization."""
+
+    captured: str
+    final: str
+    include: bool
+    note: str = ''
 
 
 def _setup_logging(*, logfile: str) -> None:
@@ -265,34 +279,38 @@ def _build_distance_matrix_df_km(dist_matrix_raw_units: list[list[float]], addre
     return pd.DataFrame(km, index=row_labels, columns=col_labels)
 
 
-def _build_input_addresses(*, cfg: RoutingAppConfig, addresses_text: str, ocr_used: bool) -> list[str]:
+def _build_input_addresses(*, cfg: RoutingAppConfig, addresses_text: str) -> list[str]:
     """
     Build the final address list used for routing.
 
-    Args:
-        cfg: Routing app configuration (includes home_address).
-        addresses_text: Text from the addresses textarea.
-        ocr_used: Whether OCR was used to populate the textarea.
-
-    Returns:
-        Address list for routing.
+    Rules:
+    - Parse non-empty lines.
+    - Prepend home exactly once (always at index 0 if set).
+    - Remove exact duplicates while preserving order.
     """
-    addresses = _parse_addresses(addresses_text)
-
-    if not addresses:
-        return [cfg.home_address]
-
-    if ocr_used and len(addresses) >= 1:
-        addresses = [addresses[0]] + addresses
+    raw = _parse_addresses(addresses_text)
 
     home = cfg.home_address.strip()
-    if home and (not addresses or addresses[0] != home):
-        addresses = [home] + addresses
+    combined: list[str] = []
+    if home:
+        combined.append(home)
+    combined.extend(raw)
 
-    return addresses
+    seen: set[str] = set()
+    out: list[str] = []
+    for a in combined:
+        key = a.strip()
+        if not key:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+
+    return out if out else ([home] if home else [])
 
 
-def _ensure_closed[T](items: list[T]) -> list[T]:
+def _ensure_closed(items: list[object]) -> list[object]:
     """
     Ensure a route list is closed by repeating the first element at the end.
 
@@ -579,6 +597,80 @@ def _make_tiled_coverage_figure(
     return fig
 
 
+def _normalize_address_line(line: str) -> str:
+    """
+    Normalize a single OCR/text line to reduce junk.
+
+    Removes bullets/numbering, collapses whitespace, trims punctuation.
+    """
+    s = line.strip()
+
+    # Remove leading bullets/numbering like '-', '•', '1)', '2.'
+    s = re.sub(r'^\s*([-\u2022*]|(\d+\s*[\).\:-]))\s*', '', s)
+
+    # Collapse whitespace
+    s = re.sub(r'\s+', ' ', s)
+
+    # Trim trailing separators
+    s = s.strip(' ,;')
+
+    return s
+
+
+def _similar(a: str, b: str) -> float:
+    """Return similarity ratio in [0, 1] using stdlib difflib."""
+    return difflib.SequenceMatcher(None, a.casefold(), b.casefold()).ratio()
+
+
+def _reconcile_addresses(lines: list[str], *, home_address: str) -> list[AddressRow]:
+    """
+    Build a reconciliation list from raw lines.
+
+    - Normalizes each line
+    - Excludes empty lines
+    - Excludes 'home-like' entries
+    - Excludes near-duplicates (keeps first occurrence)
+
+    Args:
+        lines: Raw lines (OCR or textarea).
+        home_address: Home address used as route anchor.
+
+    Returns:
+        A list of AddressRow, suitable for a Streamlit editor.
+    """
+    cleaned = [_normalize_address_line(x) for x in lines]
+    cleaned = [c for c in cleaned if c]
+
+    rows: list[AddressRow] = []
+    home = home_address.strip()
+
+    for c in cleaned:
+        include = True
+        note = ''
+
+        if home and _similar(c, home) >= _NEAR_DUPLICATE_THRESHOLD:
+            include = False
+            note = 'Looks like home address (excluded)'
+
+        rows.append(AddressRow(captured=c, final=c, include=include, note=note))
+
+    for i in range(len(rows)):
+        if not rows[i].include:
+            continue
+        for j in range(i + 1, len(rows)):
+            if not rows[j].include:
+                continue
+            if _similar(rows[i].final, rows[j].final) >= _NEAR_DUPLICATE_THRESHOLD:
+                rows[j] = AddressRow(
+                    captured=rows[j].captured,
+                    final=rows[j].final,
+                    include=False,
+                    note=f'Near-duplicate of row {i + 1} (excluded)',
+                )
+
+    return rows
+
+
 def run_routing_app(*, cfg: RoutingAppConfig) -> None:
     """Run the shared Streamlit routing app for the given configuration."""
     _setup_logging(logfile=cfg.logfile)
@@ -715,6 +807,44 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
     except Exception as exc:
         st.warning(t('graph_coverage_error', error=str(exc)))
 
+    # --- Optional reconciliation step (full UI only) ---
+    # This creates a clean "bridge" between OCR/text and routing inputs.
+    # In simple mode, we skip it and route directly from the textarea.
+    routing_text = get_addresses_text()
+    if (not simple_mode) and routing_text.strip():
+        with st.expander('OCR → routing reconciliation', expanded=False):
+            raw_lines = _parse_addresses(routing_text)
+            rows = _reconcile_addresses(raw_lines, home_address=cfg.home_address)
+
+            rec_df = pd.DataFrame(
+                {
+                    'Use': [r.include for r in rows],
+                    'Captured': [r.captured for r in rows],
+                    'Final (editable)': [r.final for r in rows],
+                    'Note': [r.note for r in rows],
+                }
+            )
+
+            edited = st.data_editor(
+                rec_df,
+                use_container_width=True,
+                column_config={
+                    'Use': st.column_config.CheckboxColumn('Use'),
+                },
+                disabled=['Captured', 'Note'],
+                hide_index=True,
+            )
+
+            final_lines = [
+                str(a).strip()
+                for use, a in zip(
+                    edited['Use'].tolist(),
+                    edited['Final (editable)'].tolist(),
+                )
+                if bool(use) and str(a).strip()
+            ]
+            routing_text = '\n'.join(final_lines)
+
     if not st.button(t('optimize')):
         return
 
@@ -722,8 +852,7 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
     with timeblock('Total optimization run', logs):
         addresses = _build_input_addresses(
             cfg=cfg,
-            addresses_text=get_addresses_text(),
-            ocr_used=bool(ocr_used),
+            addresses_text=routing_text,
         )
 
         if len(addresses) < 2:
@@ -890,10 +1019,10 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
             opt_node_ids = [snapped_node_ids[i] for i in route_indices]
 
             if is_closed:
-                orig_coords = _ensure_closed(orig_coords)
-                opt_coords = _ensure_closed(opt_coords)
-                orig_node_ids = _ensure_closed(orig_node_ids)
-                opt_node_ids = _ensure_closed(opt_node_ids)
+                orig_coords = list(_ensure_closed(orig_coords))  # type: ignore[assignment]
+                opt_coords = list(_ensure_closed(opt_coords))  # type: ignore[assignment]
+                orig_node_ids = list(_ensure_closed(orig_node_ids))  # type: ignore[assignment]
+                opt_node_ids = list(_ensure_closed(opt_node_ids))  # type: ignore[assignment]
 
             road_xs_orig: list[float] | None = None
             road_ys_orig: list[float] | None = None
