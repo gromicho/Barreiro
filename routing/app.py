@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import logging
 
 import numpy as np
@@ -33,6 +34,38 @@ from ui.widgets import (
     drive_buttons_row,
     drive_version_loader,
 )
+
+
+LOGFILE_DEFAULT: str = "routing_time_log.txt"
+MAX_SNAP_DISTANCE_M_DEFAULT: float = 5000.0
+
+
+@dataclass(frozen=True)
+class RoutingAppConfig:
+    """Configuration for a routing app instance."""
+
+    store_filename: str
+    drive_prefix: str
+    title_name: str
+    title_city: str
+
+    home_address: str
+
+    # Optional ROI to constrain geocoding and graph coverage.
+    # Tuple is (min_lat, min_lon, max_lat, max_lon) in WGS84 degrees.
+    roi_bbox_wgs84: tuple[float, float, float, float] | None = None
+    roi_name: str | None = None
+
+    # Concave hull control (no UI slider; set per instance)
+    # ratio in (0, 1]. Smaller => more concave. 1.0 ~ convex hull.
+    coverage_concavity_ratio: float = 0.25
+
+    # Whether to remove water by clipping coverage polygon to land
+    clip_coverage_to_land: bool = True
+
+    data_dir: Path = Path("data")
+    logfile: str = LOGFILE_DEFAULT
+    max_snap_distance_m: float = MAX_SNAP_DISTANCE_M_DEFAULT
 
 
 @dataclass(frozen=True)
