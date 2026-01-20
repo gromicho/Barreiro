@@ -65,6 +65,12 @@ def camera_ocr_widget(
     Mobile-friendly camera OCR widget.
 
     Args:
+        filename: Store filename for persistence/debug.
+        model: OCR model identifier.
+        home_address: Optional home address (currently unused here).
+        overwrite: Whether to overwrite addresses state on apply.
+        show_debug: Whether to show debug expander with raw OCR output.
+        duplicate_first_on_overwrite: Whether to duplicate first extracted line when overwriting.
         key_prefix: Prefix to namespace Streamlit widget keys and session keys.
 
     Returns:
@@ -73,7 +79,19 @@ def camera_ocr_widget(
     _ = home_address
 
     def k(name: str) -> str:
+        '''Build a stable namespaced key for Streamlit session/widget state.'''
         return f'{key_prefix}.{name}'
+
+    # CSS guard against distorted images on mobile
+    st.markdown(
+        '''
+<style>
+img { height: auto !important; }
+[data-testid='stCameraInput'] img { height: auto !important; }
+</style>
+''',
+        unsafe_allow_html=True,
+    )
 
     st.subheader(t('camera_ocr_title'))
 
@@ -83,6 +101,13 @@ def camera_ocr_widget(
 
     image_bytes = photo.getvalue()
     mime_type = photo.type or 'image/jpeg'
+
+    # Show captured photo using Streamlit renderer (fixes narrow mobile preview)
+    st.image(
+        image_bytes,
+        caption=t('camera_ocr_preview'),
+        use_container_width=True,
+    )
 
     cache_key = (len(image_bytes), mime_type)
     if st.session_state.get(k('last_key')) != cache_key:
@@ -157,7 +182,12 @@ def camera_ocr_widget(
             combined = (existing + '\n' + text_to_apply).strip() if existing else text_to_apply
             set_addresses_text(combined)
 
-        st.success(t('ocr_loaded_n', n=len([ln for ln in text_to_apply.splitlines() if ln.strip()])))
+        st.success(
+            t(
+                'ocr_loaded_n',
+                n=len([ln for ln in text_to_apply.splitlines() if ln.strip()]),
+            )
+        )
         for name in ('last_key', 'saved_path', 'raw', 'addresses', 'preview_text'):
             st.session_state.pop(k(name), None)
         st.rerun()
