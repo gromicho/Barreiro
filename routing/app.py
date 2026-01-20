@@ -3,12 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 from pathlib import Path
+import math
 
 import numpy as np
 import pandas as pd
 import streamlit as st
-from shapely.geometry import Point
-from shapely.ops import unary_union
+import matplotlib.pyplot as plt
+from shapely.geometry import MultiPoint, Polygon
 
 from services.geocoding import GeocodingError, geocode_addresses
 from routing.drive_network import (
@@ -53,6 +54,11 @@ class RoutingAppConfig:
     # Instance-specific anchor (e.g. home, depot)
     home_address: str
 
+    # Optional region-of-interest (ROI) to constrain geocoding and graph coverage.
+    # Tuple is (min_lat, min_lon, max_lat, max_lon) in WGS84 degrees.
+    roi_bbox_wgs84: tuple[float, float, float, float] | None = None
+    roi_name: str | None = None
+
     data_dir: Path = Path('data')
     logfile: str = LOGFILE_DEFAULT
     max_snap_distance_m: float = MAX_SNAP_DISTANCE_M_DEFAULT
@@ -95,7 +101,7 @@ def _summarize_address_label(address: str) -> str:
 
     Heuristic:
     - Split on commas.
-    - Remove a trailing country token for common cases (e.g., 'Portugal').
+    - Remove a trailing country token for common cases.
     - Join remaining parts.
 
     Args:
@@ -229,71 +235,218 @@ def _ensure_closed[T](items: list[T]) -> list[T]:
     return items + [items[0]]
 
 
-def _coverage_polygon_xy_buffer_union(
-    xs: list[float],
-    ys: list[float],
-    *,
-    radius_m: float,
-) -> list[tuple[float, float]]:
+def _latlon_to_webmercator_xy(lat: float, lon: float) -> tuple[float, float]:
     """
-    Build a 'coverage' boundary as the exterior of a union of equal-radius buffers.
-
-    This produces an isogone-like shape: it is the boundary of the region within `radius_m`
-    of at least one point (in the projected coordinate system).
+    Convert WGS84 lat/lon to EPSG:3857 x/y (meters).
 
     Args:
-        xs: x coordinates (EPSG:3857 meters).
-        ys: y coordinates (EPSG:3857 meters).
-        radius_m: Buffer radius in meters.
+        lat: Latitude in degrees.
+        lon: Longitude in degrees.
 
     Returns:
-        Exterior coordinates (x, y) of the resulting polygon.
-        If the union is empty, returns [].
+        (x, y) in Web Mercator meters.
     """
-    if radius_m <= 0 or not xs or not ys:
-        return []
-
-    geoms = [Point(float(x), float(y)).buffer(float(radius_m)) for x, y in zip(xs, ys)]
-    union = unary_union(geoms)
-    if union.is_empty:
-        return []
-
-    if union.geom_type == 'MultiPolygon':
-        union = max(union.geoms, key=lambda g: g.area)
-
-    coords = list(union.exterior.coords)
-    return [(float(x), float(y)) for x, y in coords]
+    r = 6378137.0
+    x = r * math.radians(float(lon))
+    lat_clamped = max(min(float(lat), 89.999999), -89.999999)
+    y = r * math.log(math.tan(math.pi / 4.0 + math.radians(lat_clamped) / 2.0))
+    return x, y
 
 
-def _overlay_coverage_on_fig(
-    fig: object,
-    *,
-    snapped_node_ids_for_points: list[int],
-    nodes: DriveNodes,
-    radius_km: float,
-) -> None:
+def _roi_bbox_3857(cfg: RoutingAppConfig) -> tuple[float, float, float, float] | None:
     """
-    Overlay a coverage boundary on an existing matplotlib figure.
+    Convert config ROI bbox from WGS84 to EPSG:3857.
+
+    Returns:
+        (min_x, min_y, max_x, max_y) in meters or None.
+    """
+    if cfg.roi_bbox_wgs84 is None:
+        return None
+
+    min_lat, min_lon, max_lat, max_lon = cfg.roi_bbox_wgs84
+    x1, y1 = _latlon_to_webmercator_xy(min_lat, min_lon)
+    x2, y2 = _latlon_to_webmercator_xy(max_lat, max_lon)
+    return (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+
+
+def _iter_node_ids_from_graph(graph: object) -> list[int]:
+    """
+    Extract node ids from a NetworkX-like graph.
 
     Args:
-        fig: Matplotlib figure returned by make_matplotlib_route_map.
-        snapped_node_ids_for_points: Node ids in the same order as the input points.
-        nodes: Nodes lookup used by snapped_nodes_xy_3857.
-        radius_km: Buffer radius in kilometers.
+        graph: Drive graph (expected to behave like a NetworkX graph).
+
+    Returns:
+        List of node ids (as ints when possible).
     """
-    if radius_km <= 0:
-        return
+    try:
+        node_ids = list(graph.nodes)  # type: ignore[attr-defined]
+    except Exception:
+        node_ids = list(graph)  # type: ignore[arg-type]
 
-    ax = fig.axes[0]
+    out: list[int] = []
+    for nid in node_ids:
+        try:
+            out.append(int(nid))
+        except Exception:
+            continue
+    return out
 
-    xs, ys = snapped_nodes_xy_3857(snapped_node_ids_for_points, nodes)
-    coords = _coverage_polygon_xy_buffer_union(xs, ys, radius_m=radius_km * 1000.0)
-    if not coords:
-        return
 
-    hx = [p[0] for p in coords]
-    hy = [p[1] for p in coords]
-    ax.plot(hx, hy, linewidth=2.0, alpha=0.85)
+def _estimate_edge_length_m(graph: object, *, sample_size: int = 5000) -> float | None:
+    """
+    Estimate a typical edge length from the graph (meters), if available.
+
+    Looks for edge attribute 'length' (common in OSMnx / road graphs).
+
+    Args:
+        graph: Drive graph (NetworkX-like).
+        sample_size: Max number of edges to sample.
+
+    Returns:
+        Median edge length in meters, or None if not found.
+    """
+    lengths: list[float] = []
+    try:
+        edges_iter = graph.edges(data=True)  # type: ignore[attr-defined]
+    except Exception:
+        return None
+
+    for k, (_u, _v, data) in enumerate(edges_iter):
+        if k >= sample_size:
+            break
+        if not isinstance(data, dict):
+            continue
+        val = data.get('length')
+        if val is None:
+            continue
+        try:
+            f = float(val)
+        except Exception:
+            continue
+        if np.isfinite(f) and f > 0:
+            lengths.append(f)
+
+    if not lengths:
+        return None
+
+    return float(np.median(np.array(lengths, dtype=float)))
+
+
+def _graph_coverage_polygon_xy_3857(
+    *,
+    graph: object,
+    nodes: DriveNodes,
+    roi_bbox_3857: tuple[float, float, float, float] | None,
+) -> Polygon | None:
+    """
+    Build a coverage polygon for the graph based on its nodes and edges.
+
+    Strategy (fast + robust):
+    1) Take node coordinates (EPSG:3857).
+    2) If ROI is provided, restrict to nodes inside ROI.
+    3) Compute convex hull of the selected nodes (area including all selected nodes).
+    4) Buffer by an automatically-derived distance using median edge length.
+
+    Args:
+        graph: Drive graph.
+        nodes: Nodes lookup compatible with snapped_nodes_xy_3857.
+        roi_bbox_3857: Optional ROI bbox in EPSG:3857 (min_x, min_y, max_x, max_y).
+
+    Returns:
+        A Shapely Polygon in EPSG:3857, or None if it cannot be constructed.
+    """
+    node_ids = _iter_node_ids_from_graph(graph)
+    if not node_ids:
+        return None
+
+    xs, ys = snapped_nodes_xy_3857(node_ids, nodes)
+    if not xs or not ys:
+        return None
+
+    if roi_bbox_3857 is not None:
+        min_x, min_y, max_x, max_y = roi_bbox_3857
+        keep_ids: list[int] = []
+        for nid, x, y in zip(node_ids, xs, ys):
+            if (min_x <= float(x) <= max_x) and (min_y <= float(y) <= max_y):
+                keep_ids.append(nid)
+
+        if not keep_ids:
+            return None
+
+        xs, ys = snapped_nodes_xy_3857(keep_ids, nodes)
+        node_ids = keep_ids
+
+    pts = MultiPoint([(float(x), float(y)) for x, y in zip(xs, ys)])
+    if pts.is_empty:
+        return None
+
+    hull = pts.convex_hull
+    if hull.is_empty:
+        return None
+
+    edge_med_m = _estimate_edge_length_m(graph)
+    if edge_med_m is None:
+        buffer_m = 250.0
+    else:
+        buffer_m = float(np.clip(0.75 * edge_med_m, 75.0, 1500.0))
+
+    poly = hull.buffer(buffer_m)
+
+    if poly.geom_type == 'Polygon':
+        return poly
+    if poly.geom_type == 'MultiPolygon':
+        return max(poly.geoms, key=lambda g: g.area)
+    return None
+
+
+def _make_matplotlib_graph_coverage_map(
+    *,
+    poly_3857: Polygon,
+    title: str,
+    graph: object,
+    nodes: DriveNodes,
+    roi_bbox_3857: tuple[float, float, float, float] | None,
+    max_scatter_points: int = 4000,
+) -> object:
+    """
+    Make a dedicated matplotlib figure showing the graph coverage polygon (and optionally nodes).
+
+    Args:
+        poly_3857: Coverage polygon in EPSG:3857.
+        title: Figure title.
+        graph: Drive graph.
+        nodes: Nodes lookup.
+        roi_bbox_3857: Optional ROI bbox to set a stable viewport.
+        max_scatter_points: Downsample node scatter for speed.
+
+    Returns:
+        Matplotlib figure.
+    """
+    fig, ax = plt.subplots(figsize=(9, 7))
+    ax.set_title(title)
+
+    x, y = poly_3857.exterior.xy
+    ax.plot(x, y, linewidth=2.0, alpha=0.9)
+
+    node_ids = _iter_node_ids_from_graph(graph)
+    if node_ids:
+        if len(node_ids) > max_scatter_points:
+            step = max(1, len(node_ids) // max_scatter_points)
+            node_ids = node_ids[::step]
+
+        xs, ys = snapped_nodes_xy_3857(node_ids, nodes)
+        if xs and ys:
+            ax.scatter(xs, ys, s=2, alpha=0.25)
+
+    if roi_bbox_3857 is not None:
+        min_x, min_y, max_x, max_y = roi_bbox_3857
+        ax.set_xlim(min_x, max_x)
+        ax.set_ylim(min_y, max_y)
+
+    ax.set_aspect('equal', adjustable='box')
+    ax.axis('off')
+    return fig
 
 
 def run_routing_app(*, cfg: RoutingAppConfig) -> None:
@@ -315,9 +468,6 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
     simple_mode = ui_mode_label == t('ui_simple')
 
     show_road_overlay = False
-    show_coverage = False
-    coverage_radius_km = 2.0
-
     if not simple_mode:
         overlay_label = st.radio(
             t('road_overlay'),
@@ -326,19 +476,6 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
             horizontal=True,
         )
         show_road_overlay = overlay_label == t('on')
-
-        show_coverage = st.checkbox(
-            'Toon dekking (isogoon-achtig)',
-            value=False,
-            help='Tekent de buitenrand van de unie van buffers rond de gesnapte punten.',
-        )
-        coverage_radius_km = st.slider(
-            'Dekkingsradius (km)',
-            min_value=0.5,
-            max_value=25.0,
-            value=2.0,
-            step=0.5,
-        )
 
     if not simple_mode:
         st.markdown(t('instructions'))
@@ -354,10 +491,10 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
             home_address=cfg.home_address,
             overwrite=True,
             show_debug=False,
-            duplicate_first_on_overwrite=False,  # handled in _build_input_addresses
+            duplicate_first_on_overwrite=False,
         )
     else:
-        with st.expander('📷 Camera OCR (debug)', expanded=False):
+        with st.expander(t('camera_ocr_expander'), expanded=False):
             ocr_used = camera_ocr_widget(
                 filename=cfg.store_filename,
                 model='gpt-4.1-mini',
@@ -365,7 +502,7 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
                 home_address=cfg.home_address,
                 overwrite=True,
                 show_debug=True,
-                duplicate_first_on_overwrite=False,  # handled in _build_input_addresses
+                duplicate_first_on_overwrite=False,
             )
 
     addresses_text_area(
@@ -394,6 +531,37 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
     )
     is_closed = route_type_label == t('route_closed')
 
+    # --- NEW: dedicated graph coverage map BEFORE any computations ---
+    graph: DriveGraph | None = None
+    nodes: DriveNodes | None = None
+    roi_3857 = _roi_bbox_3857(cfg)
+
+    try:
+        with st.spinner(t('loading_network')):
+            graph, nodes = _cached_drive_graph(str(cfg.data_dir), cfg.drive_prefix)
+
+        poly = _graph_coverage_polygon_xy_3857(graph=graph, nodes=nodes, roi_bbox_3857=roi_3857)
+        if poly is not None:
+            subtitle = t('graph_coverage_subtitle')
+            if cfg.roi_name:
+                subtitle = t('graph_coverage_subtitle_roi', roi=cfg.roi_name)
+
+            st.subheader(t('graph_coverage_title'))
+            st.caption(subtitle)
+
+            fig_cov = _make_matplotlib_graph_coverage_map(
+                poly_3857=poly,
+                title=t('graph_coverage_map_title'),
+                graph=graph,
+                nodes=nodes,
+                roi_bbox_3857=roi_3857,
+            )
+            st.pyplot(fig_cov, width='stretch')
+        else:
+            st.warning(t('graph_coverage_failed'))
+    except Exception as exc:
+        st.warning(t('graph_coverage_error', error=str(exc)))
+
     if not st.button(t('optimize')):
         return
 
@@ -414,9 +582,11 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
             return
 
         try:
-            with st.spinner(t('loading_network')):
-                with timeblock('Loading drive graph', logs):
-                    graph, nodes = _cached_drive_graph(str(cfg.data_dir), cfg.drive_prefix)
+            # Reuse already-loaded graph if available, otherwise load now.
+            if graph is None or nodes is None:
+                with st.spinner(t('loading_network')):
+                    with timeblock('Loading drive graph', logs):
+                        graph, nodes = _cached_drive_graph(str(cfg.data_dir), cfg.drive_prefix)
         except Exception as exc:
             st.error(t('network_load_error', error=str(exc)))
             return
@@ -426,7 +596,7 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
                 with timeblock('Geocoding addresses', logs):
                     coords = geocode_addresses(
                         addresses=addresses,
-                        bbox=None,
+                        bbox=cfg.roi_bbox_wgs84,
                         persist=True,
                         store_filename=cfg.store_filename,
                         throttle_s=0.0,
@@ -468,7 +638,7 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
             return
 
         if not simple_mode:
-            st.subheader('Geocoded + snapping (overview)')
+            st.subheader(t('snapping_overview_title'))
             snap_km = np.array(snapped_distances_m, dtype=float) / 1000.0
             overview_df = pd.DataFrame(
                 {
@@ -484,7 +654,10 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
                     overview_df,
                     use_container_width=True,
                     column_config={
-                        'Snap dist (km)': st.column_config.NumberColumn('Snap dist (km)', format='%.2f km'),
+                        'Snap dist (km)': st.column_config.NumberColumn(
+                            t('snap_dist_km_col'),
+                            format='%.2f km',
+                        ),
                     },
                 )
             except Exception:
@@ -494,6 +667,7 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
         if offending:
             st.error(t('too_far_error', km=f'{cfg.max_snap_distance_m / 1000.0:.1f}'))
             if not simple_mode:
+                st.write(t('too_far_list_title'))
                 for i in offending:
                     st.write(f'- {addresses[i]} ({snapped_distances_m[i] / 1000.0:.2f} km)')
             return
@@ -519,7 +693,7 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
         dist_matrix = c.tolist()
 
         if not simple_mode:
-            with st.expander('Afstandsmatrix (km)', expanded=False):
+            with st.expander(t('dist_matrix_expander'), expanded=False):
                 dist_df = _build_distance_matrix_df_km(dist_matrix, addresses)
                 try:
                     st.dataframe(
@@ -623,21 +797,6 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
                 snapped_xs=snapped_xs_opt,
                 snapped_ys=snapped_ys_opt,
             )
-
-            if show_coverage:
-                base_node_ids = snapped_node_ids[:]  # input order, no closure duplication
-                _overlay_coverage_on_fig(
-                    fig_orig,
-                    snapped_node_ids_for_points=base_node_ids,
-                    nodes=nodes,
-                    radius_km=float(coverage_radius_km),
-                )
-                _overlay_coverage_on_fig(
-                    fig_opt,
-                    snapped_node_ids_for_points=base_node_ids,
-                    nodes=nodes,
-                    radius_km=float(coverage_radius_km),
-                )
 
             col_l, col_r = st.columns(2)
             with col_l:
