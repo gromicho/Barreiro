@@ -9,7 +9,9 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
+import geopandas as gpd
 from shapely.geometry import MultiPoint, Polygon
+from shapely.ops import unary_union
 
 # Shapely (latest) concave hull API (keep a robust fallback)
 try:
@@ -17,7 +19,7 @@ try:
 except Exception:  # pragma: no cover
     _shapely_concave_hull = None
 
-# Basemap tiles (your route map likely uses something similar internally; this gives us tiled coverage too)
+# Basemap tiles
 try:
     import contextily as ctx  # type: ignore[import-not-found]
 except Exception:  # pragma: no cover
@@ -63,10 +65,9 @@ class RoutingAppConfig:
     title_name: str
     title_city: str
 
-    # Instance-specific anchor (e.g. home, depot)
     home_address: str
 
-    # Optional region-of-interest (ROI) to constrain geocoding and graph coverage.
+    # Optional ROI to constrain geocoding and graph coverage.
     # Tuple is (min_lat, min_lon, max_lat, max_lon) in WGS84 degrees.
     roi_bbox_wgs84: tuple[float, float, float, float] | None = None
     roi_name: str | None = None
@@ -74,6 +75,9 @@ class RoutingAppConfig:
     # Concave hull control (no UI slider; set per instance)
     # ratio in (0, 1]. Smaller => more concave. 1.0 ~ convex hull.
     coverage_concavity_ratio: float = 0.25
+
+    # Whether to remove water by clipping coverage polygon to land
+    clip_coverage_to_land: bool = True
 
     data_dir: Path = Path('data')
     logfile: str = LOGFILE_DEFAULT
@@ -104,6 +108,48 @@ DriveNodes = object
 def _cached_drive_graph(data_dir_str: str, drive_prefix: str) -> tuple[DriveGraph, DriveNodes]:
     """Load and cache the drive graph per (data_dir, drive_prefix)."""
     return load_drive_graph(data_dir=Path(data_dir_str), drive_prefix=drive_prefix)
+
+
+@st.cache_resource(show_spinner=False)
+def _cached_land_union_3857() -> object:
+    """
+    Load a land polygon union in EPSG:3857.
+
+    Uses GeoPandas' built-in Natural Earth lowres dataset (offline, no extra packages).
+    Returns a Shapely geometry (often a MultiPolygon) suitable for intersections.
+    """
+    world = gpd.read_file(gpd.datasets.get_path('naturalearth_lowres'))
+    land_3857 = world[['geometry']].to_crs(epsg=3857)
+    return unary_union(land_3857.geometry)
+
+
+def _clip_polygon_to_land(poly_3857: Polygon, *, land_union_3857: object) -> Polygon:
+    """
+    Clip a polygon to land only (remove sea/estuaries/lakes from the coverage).
+
+    Args:
+        poly_3857: Coverage polygon in EPSG:3857.
+        land_union_3857: Union geometry of land polygons in EPSG:3857.
+
+    Returns:
+        Polygon clipped to land. If clipping yields empty or non-polygonal result,
+        returns the original polygon.
+    """
+    try:
+        clipped = poly_3857.intersection(land_union_3857)  # type: ignore[arg-type]
+    except Exception:
+        return poly_3857
+
+    if getattr(clipped, 'is_empty', True):
+        return poly_3857
+
+    if clipped.geom_type == 'Polygon':
+        return clipped
+
+    if clipped.geom_type == 'MultiPolygon':
+        return max(clipped.geoms, key=lambda g: g.area)
+
+    return poly_3857
 
 
 def _parse_addresses(text: str) -> list[str]:
@@ -360,7 +406,6 @@ def _concave_or_convex_hull(points: MultiPoint, *, ratio: float) -> Polygon | No
         except Exception:
             pass
 
-    # Fallback: convex hull
     hull = points.convex_hull
     if hull.is_empty:
         return None
@@ -419,7 +464,6 @@ def _graph_coverage_polygon_xy_3857(
     if poly is None:
         return None
 
-    # Edges influence: choose a stable buffer based on typical edge length (meters).
     edge_med_m = _estimate_edge_length_m(graph)
     if edge_med_m is None:
         buffer_m = 250.0
@@ -445,7 +489,7 @@ def _make_tiled_coverage_figure(
     max_scatter_points: int = 4000,
 ) -> object:
     """
-    Create a map with basemap tiles and overlay the coverage polygon + (optional) nodes.
+    Create a map with basemap tiles and overlay the coverage polygon + nodes.
 
     Uses EPSG:3857 so it matches typical web tiles.
 
@@ -463,7 +507,6 @@ def _make_tiled_coverage_figure(
     fig, ax = plt.subplots(figsize=(9, 7))
     ax.set_title(title)
 
-    # Set extent first so the basemap fetches the right area
     minx, miny, maxx, maxy = poly_3857.bounds
     pad_x = 0.05 * (maxx - minx) if maxx > minx else 250.0
     pad_y = 0.05 * (maxy - miny) if maxy > miny else 250.0
@@ -476,7 +519,6 @@ def _make_tiled_coverage_figure(
         ax.set_xlim(rminx, rmaxx)
         ax.set_ylim(rminy, rmaxy)
 
-    # Tiles
     if ctx is not None:
         try:
             ctx.add_basemap(
@@ -486,10 +528,8 @@ def _make_tiled_coverage_figure(
                 attribution=False,
             )
         except Exception:
-            # Keep going without tiles if it fails (offline, rate-limited, etc.)
             pass
 
-    # Nodes (light scatter)
     node_ids = _iter_node_ids_from_graph(graph)
     if node_ids:
         if len(node_ids) > max_scatter_points:
@@ -500,7 +540,6 @@ def _make_tiled_coverage_figure(
         if xs and ys:
             ax.scatter(xs, ys, s=2, alpha=0.25)
 
-    # Polygon outline on top
     x, y = poly_3857.exterior.xy
     ax.plot(x, y, linewidth=2.0, alpha=0.9)
 
@@ -591,7 +630,7 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
     )
     is_closed = route_type_label == t('route_closed')
 
-    # --- Graph coverage map FIRST (tiles + concave hull), before any optimization computations ---
+    # --- Graph coverage map FIRST (tiles + concave hull + land clipping) ---
     graph: DriveGraph | None = None
     nodes: DriveNodes | None = None
     roi_3857 = _roi_bbox_3857(cfg)
@@ -610,6 +649,13 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
         if poly is None:
             st.warning(t('graph_coverage_failed'))
         else:
+            if cfg.clip_coverage_to_land:
+                try:
+                    land_union = _cached_land_union_3857()
+                    poly = _clip_polygon_to_land(poly, land_union_3857=land_union)
+                except Exception as exc:
+                    st.warning(t('graph_coverage_landclip_error', error=str(exc)))
+
             st.subheader(t('graph_coverage_title'))
             if cfg.roi_name:
                 st.caption(t('graph_coverage_subtitle_roi', roi=cfg.roi_name))
@@ -888,17 +934,3 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
         with st.expander(t('timinglog_expander')):
             for line in logs:
                 st.write(line)
-
-
-# i18n keys you need in your translations (so you do not see raw keys in UI):
-# 'camera_ocr_expander'
-# 'graph_coverage_title'
-# 'graph_coverage_subtitle'
-# 'graph_coverage_subtitle_roi' (expects {roi})
-# 'graph_coverage_map_title'
-# 'graph_coverage_failed'
-# 'graph_coverage_error' (expects {error})
-# 'snapping_overview_title'
-# 'snap_dist_km_col'
-# 'too_far_list_title'
-# 'dist_matrix_expander'
