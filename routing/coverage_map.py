@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import numpy as np
 import streamlit as st
 
-# Heavy geo stack lives here (so routing/app.py stays light)
 import geopandas as gpd
 import matplotlib.pyplot as plt
 from shapely.geometry import MultiPoint, Polygon
@@ -15,9 +15,9 @@ from shapely.ops import unary_union
 from routing.drive_network import load_drive_graph
 from routing.route_plot import snapped_nodes_xy_3857
 
-# Shapely (latest) concave hull API (keep a robust fallback)
+# Shapely concave hull (shapely >= 2.0). Fallback to convex hull if absent.
 try:
-    from shapely import concave_hull as _shapely_concave_hull  # shapely >= 2.0
+    from shapely import concave_hull as _shapely_concave_hull  # type: ignore[attr-defined]
 except Exception:  # pragma: no cover
     _shapely_concave_hull = None
 
@@ -26,6 +26,76 @@ try:
     import contextily as ctx  # type: ignore[import-not-found]
 except Exception:  # pragma: no cover
     ctx = None
+
+
+@st.cache_resource(show_spinner=False)
+def _cached_drive_graph(data_dir_str: str, drive_prefix: str) -> tuple[object, object]:
+    """Load and cache the drive graph per (data_dir, drive_prefix)."""
+    return load_drive_graph(data_dir=Path(data_dir_str), drive_prefix=drive_prefix)
+
+
+@st.cache_resource(show_spinner=False)
+def _cached_land_union_3857() -> object:
+    """
+    Load a land polygon union in EPSG:3857.
+
+    Uses GeoPandas' built-in Natural Earth lowres dataset (offline).
+    """
+    world = gpd.read_file(gpd.datasets.get_path("naturalearth_lowres"))
+    land_3857 = world[["geometry"]].to_crs(epsg=3857)
+    return unary_union(land_3857.geometry)
+
+
+@st.cache_resource(show_spinner=False)
+def _cached_water_union_3857(roi_polygon_3857: Polygon) -> object | None:
+    """
+    Load OSM water polygons inside ROI and union them.
+
+    Requires osmnx; returns None if unavailable or errors.
+    """
+    try:
+        import osmnx as ox
+    except Exception:
+        return None
+
+    roi_wgs84 = gpd.GeoSeries([roi_polygon_3857], crs=3857).to_crs(epsg=4326).iloc[0]
+    tags = {"natural": "water", "waterway": "riverbank"}
+
+    try:
+        gdf = ox.features_from_polygon(roi_wgs84, tags=tags)
+    except Exception:
+        return None
+
+    if gdf.empty:
+        return None
+
+    gdf_3857 = gdf.to_crs(epsg=3857)
+    return unary_union(gdf_3857.geometry)
+
+
+def _clip_polygon_to_land_and_remove_water(
+    poly_3857: Polygon,
+    *,
+    land_union_3857: object,
+    water_union_3857: object | None,
+) -> Polygon:
+    """Keep land, remove water when possible."""
+    try:
+        geom = poly_3857.intersection(land_union_3857)
+        if water_union_3857 is not None:
+            geom = geom.difference(water_union_3857)
+    except Exception:
+        return poly_3857
+
+    if geom.is_empty:
+        return poly_3857
+
+    if geom.geom_type == "Polygon":
+        return geom
+    if geom.geom_type == "MultiPolygon":
+        return max(geom.geoms, key=lambda g: g.area)
+
+    return poly_3857
 
 
 def _latlon_to_webmercator_xy(lat: float, lon: float) -> tuple[float, float]:
@@ -37,19 +107,12 @@ def _latlon_to_webmercator_xy(lat: float, lon: float) -> tuple[float, float]:
     return x, y
 
 
-def _roi_bbox_3857(roi_bbox_wgs84: tuple[float, float, float, float] | None) -> tuple[float, float, float, float] | None:
-    """
-    Convert ROI bbox from WGS84 to EPSG:3857.
-
-    Args:
-        roi_bbox_wgs84: (min_lat, min_lon, max_lat, max_lon) in degrees.
-
-    Returns:
-        (min_x, min_y, max_x, max_y) in meters or None.
-    """
+def _roi_bbox_3857(
+    roi_bbox_wgs84: tuple[float, float, float, float] | None,
+) -> tuple[float, float, float, float] | None:
+    """Convert ROI bbox from WGS84 to EPSG:3857."""
     if roi_bbox_wgs84 is None:
         return None
-
     min_lat, min_lon, max_lat, max_lon = roi_bbox_wgs84
     x1, y1 = _latlon_to_webmercator_xy(min_lat, min_lon)
     x2, y2 = _latlon_to_webmercator_xy(max_lat, max_lon)
@@ -73,11 +136,7 @@ def _iter_node_ids_from_graph(graph: object) -> list[int]:
 
 
 def _estimate_edge_length_m(graph: object, *, sample_size: int = 5000) -> float | None:
-    """
-    Estimate a typical edge length from the graph (meters), if available.
-
-    Looks for edge attribute 'length' (common in OSMnx / road graphs).
-    """
+    """Estimate typical edge length (meters) from edge attribute 'length'."""
     lengths: list[float] = []
     try:
         edges_iter = graph.edges(data=True)  # type: ignore[attr-defined]
@@ -101,18 +160,11 @@ def _estimate_edge_length_m(graph: object, *, sample_size: int = 5000) -> float 
 
     if not lengths:
         return None
-
     return float(np.median(np.array(lengths, dtype=float)))
 
 
 def _concave_or_convex_hull(points: MultiPoint, *, ratio: float) -> Polygon | None:
-    """
-    Compute a concave hull (preferred) with a safe convex fallback.
-
-    Args:
-        points: MultiPoint in EPSG:3857.
-        ratio: Concavity ratio in (0, 1]. Lower => more concave. 1 => convex-ish.
-    """
+    """Compute concave hull (preferred) with convex fallback."""
     if points.is_empty:
         return None
 
@@ -147,15 +199,7 @@ def _graph_coverage_polygon_xy_3857(
     roi_bbox_3857: tuple[float, float, float, float] | None,
     concavity_ratio: float,
 ) -> Polygon | None:
-    """
-    Build a coverage polygon for the graph based on its nodes and edges.
-
-    Strategy:
-    1) Take node coordinates (EPSG:3857).
-    2) If ROI is provided, restrict to nodes inside ROI.
-    3) Compute concave hull (preferred) else convex hull.
-    4) Buffer by an automatically-derived distance using median edge length.
-    """
+    """Build a buffered coverage polygon from node locations."""
     node_ids = _iter_node_ids_from_graph(graph)
     if not node_ids:
         return None
@@ -192,8 +236,107 @@ def _graph_coverage_polygon_xy_3857(
     return None
 
 
-@st.cache_resource(show_spinner=False)
-def _cached_drive_graph(data_dir_str: str, drive_prefix: str) -> tuple[object, object]:
-    """Load and cache the drive graph per (data_dir, drive_prefix)."""
-    return load_drive_graph(data_dir=gpd.GeoSeries([0]).index._data.__class__.__mro__[1]("data") if False else __import__("pathlib").Path(data_dir_str),  # noqa: E501
-                           drive_prefix=drive_prefix)
+def _make_tiled_coverage_figure(
+    *,
+    poly_3857: Polygon,
+    title: str,
+    graph: object,
+    nodes: object,
+    roi_bbox_3857: tuple[float, float, float, float] | None,
+    max_scatter_points: int = 4000,
+) -> object:
+    """Create a map with basemap tiles and overlay the coverage polygon + nodes."""
+    fig, ax = plt.subplots(figsize=(9, 7))
+    ax.set_title(title)
+
+    minx, miny, maxx, maxy = poly_3857.bounds
+    pad_x = 0.05 * (maxx - minx) if maxx > minx else 250.0
+    pad_y = 0.05 * (maxy - miny) if maxy > miny else 250.0
+    ax.set_xlim(minx - pad_x, maxx + pad_x)
+    ax.set_ylim(miny - pad_y, maxy + pad_y)
+
+    if roi_bbox_3857 is not None:
+        rminx, rminy, rmaxx, rmaxy = roi_bbox_3857
+        ax.set_xlim(rminx, rmaxx)
+        ax.set_ylim(rminy, rmaxy)
+
+    if ctx is not None:
+        try:
+            ctx.add_basemap(
+                ax,
+                crs="EPSG:3857",
+                source=ctx.providers.OpenStreetMap.Mapnik,
+                attribution=False,
+            )
+        except Exception:
+            pass
+
+    node_ids = _iter_node_ids_from_graph(graph)
+    if node_ids:
+        if len(node_ids) > max_scatter_points:
+            step = max(1, len(node_ids) // max_scatter_points)
+            node_ids = node_ids[::step]
+        xs, ys = snapped_nodes_xy_3857(node_ids, nodes)
+        if xs and ys:
+            ax.scatter(xs, ys, s=2, alpha=0.25)
+
+    x, y = poly_3857.exterior.xy
+    ax.plot(x, y, linewidth=2.0, alpha=0.9)
+
+    ax.set_aspect("equal", adjustable="box")
+    ax.axis("off")
+    return fig
+
+
+def render_coverage_map(
+    *,
+    data_dir: str,
+    drive_prefix: str,
+    roi_bbox_wgs84: tuple[float, float, float, float] | None,
+    concavity_ratio: float,
+    clip_to_land: bool,
+    roi_name: str | None = None,
+    title: str = "Network coverage",
+    map_title: str = "Coverage map",
+    subtitle: str = "This map shows where the drive network exists.",
+) -> None:
+    """Render a coverage map section in Streamlit."""
+    roi_3857 = _roi_bbox_3857(roi_bbox_wgs84)
+    graph, nodes = _cached_drive_graph(data_dir, drive_prefix)
+
+    poly = _graph_coverage_polygon_xy_3857(
+        graph=graph,
+        nodes=nodes,
+        roi_bbox_3857=roi_3857,
+        concavity_ratio=float(concavity_ratio),
+    )
+
+    if poly is None:
+        st.warning("Could not construct coverage polygon.")
+        return
+
+    if clip_to_land:
+        try:
+            land_union = _cached_land_union_3857()
+            water_union = None
+            if roi_3857 is not None:
+                water_union = _cached_water_union_3857(Polygon.from_bounds(*roi_3857))
+            poly = _clip_polygon_to_land_and_remove_water(
+                poly,
+                land_union_3857=land_union,
+                water_union_3857=water_union,
+            )
+        except Exception as exc:
+            st.warning(f"Land/water clipping failed: {exc}")
+
+    st.subheader(title)
+    st.caption(f"{subtitle} ROI: {roi_name}" if roi_name else subtitle)
+
+    fig = _make_tiled_coverage_figure(
+        poly_3857=poly,
+        title=map_title,
+        graph=graph,
+        nodes=nodes,
+        roi_bbox_3857=roi_3857,
+    )
+    st.pyplot(fig, width="stretch")

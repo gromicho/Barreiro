@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
+import difflib
 import logging
+from pathlib import Path
+import re
 
 import numpy as np
 import pandas as pd
@@ -35,9 +37,9 @@ from ui.widgets import (
     drive_version_loader,
 )
 
-
 LOGFILE_DEFAULT: str = "routing_time_log.txt"
 MAX_SNAP_DISTANCE_M_DEFAULT: float = 5000.0
+_NEAR_DUPLICATE_THRESHOLD: float = 0.92
 
 
 def _setup_logging(*, logfile: str) -> None:
@@ -56,6 +58,12 @@ def _setup_logging(*, logfile: str) -> None:
     setattr(_setup_logging, "_configured", True)
 
 
+@st.cache_resource(show_spinner=False)
+def _cached_drive_graph(data_dir_str: str, drive_prefix: str) -> tuple[object, object]:
+    """Load and cache the drive graph per (data_dir, drive_prefix)."""
+    return load_drive_graph(data_dir=Path(data_dir_str), drive_prefix=drive_prefix)
+
+
 @dataclass(frozen=True)
 class RoutingAppConfig:
     """Configuration for a routing app instance."""
@@ -64,15 +72,14 @@ class RoutingAppConfig:
     drive_prefix: str
     title_name: str
     title_city: str
-
     home_address: str
 
-    # Optional ROI to constrain geocoding and graph coverage.
+    # Optional ROI to constrain geocoding and (optional) coverage map
     # Tuple is (min_lat, min_lon, max_lat, max_lon) in WGS84 degrees.
     roi_bbox_wgs84: tuple[float, float, float, float] | None = None
     roi_name: str | None = None
 
-    # Concave hull control (no UI slider; set per instance)
+    # Concave hull control for coverage map (no UI slider; set per instance)
     # ratio in (0, 1]. Smaller => more concave. 1.0 ~ convex hull.
     coverage_concavity_ratio: float = 0.25
 
@@ -104,6 +111,16 @@ class OptimizationResult:
 
     maps_url: str
     logs: list[str]
+
+
+@dataclass(frozen=True)
+class AddressRow:
+    """One address candidate with provenance and normalization."""
+
+    captured: str
+    final: str
+    include: bool
+    note: str = ""
 
 
 def _parse_addresses(text: str) -> list[str]:
@@ -170,13 +187,6 @@ def _build_input_addresses(*, cfg: RoutingAppConfig, addresses_text: str) -> lis
     return out if out else ([home] if home else [])
 
 
-import difflib
-import re
-
-
-_NEAR_DUPLICATE_THRESHOLD: float = 0.92
-
-
 def _ensure_closed(items: list[object]) -> list[object]:
     """
     Ensure a route list is closed by repeating the first element at the end.
@@ -196,13 +206,9 @@ def _ensure_closed(items: list[object]) -> list[object]:
 
 def _distance_matrix_to_km(dist_matrix: list[list[float]]) -> np.ndarray:
     """
-    Convert a distance matrix to kilometers using a robust heuristic for units.
+    Convert a distance matrix to kilometers using a heuristic for units.
 
-    Args:
-        dist_matrix: Square matrix of distances in unknown units (meters or km).
-
-    Returns:
-        NumPy array with distances in kilometers.
+    If the median non-zero value is large (>200), we assume meters and divide by 1000.
     """
     a = np.array(dist_matrix, dtype=float)
     nonzero = a[a > 0]
@@ -210,7 +216,6 @@ def _distance_matrix_to_km(dist_matrix: list[list[float]]) -> np.ndarray:
         return a
 
     med = float(np.median(nonzero))
-    # Heuristic: if median > 200, it's probably meters
     if med > 200.0:
         return a / 1000.0
     return a
@@ -218,14 +223,7 @@ def _distance_matrix_to_km(dist_matrix: list[list[float]]) -> np.ndarray:
 
 def _build_distance_matrix_df_km(dist_matrix_raw_units: list[list[float]], addresses: list[str]) -> pd.DataFrame:
     """
-    Build a DataFrame to display a distance matrix in Streamlit.
-
-    Args:
-        dist_matrix_raw_units: Distance matrix in unknown units (meters or km).
-        addresses: Addresses in the same order as the matrix rows.
-
-    Returns:
-        DataFrame with km values rounded to 1 decimal.
+    Build a DataFrame to display a distance matrix in Streamlit (km).
     """
     n = len(dist_matrix_raw_units)
     row_labels = [f"{i}. {_summarize_address_label(a)}" for i, a in enumerate(addresses, start=1)]
@@ -241,25 +239,14 @@ def _normalize_address_line(line: str) -> str:
     Removes bullets/numbering, collapses whitespace, trims punctuation.
     """
     s = line.strip()
-    s = re.sub(r"^\s*([-\u2022*]|(\d+\s*[\).\:-]))\s*", "", s)  # leading bullets/numbering
-    s = re.sub(r"\s+", " ", s)  # collapse whitespace
-    s = s.strip(" ,;")  # trim trailing separators
-    return s
+    s = re.sub(r"^\s*([-\u2022*]|(\d+\s*[\).\:-]))\s*", "", s)
+    s = re.sub(r"\s+", " ", s)
+    return s.strip(" ,;")
 
 
 def _similar(a: str, b: str) -> float:
     """Return similarity ratio in [0, 1] using stdlib difflib."""
     return difflib.SequenceMatcher(None, a.casefold(), b.casefold()).ratio()
-
-
-@dataclass(frozen=True)
-class AddressRow:
-    """One address candidate with provenance and normalization."""
-
-    captured: str
-    final: str
-    include: bool
-    note: str = ""
 
 
 def _reconcile_addresses(lines: list[str], *, home_address: str) -> list[AddressRow]:
@@ -285,7 +272,6 @@ def _reconcile_addresses(lines: list[str], *, home_address: str) -> list[Address
             note = "Looks like home address (excluded)"
         rows.append(AddressRow(captured=c, final=c, include=include, note=note))
 
-    # Near-duplicate filtering
     for i in range(len(rows)):
         if not rows[i].include:
             continue
@@ -307,12 +293,10 @@ def _set_addresses_text_in_state(text: str) -> None:
     """
     Best-effort: write address text back into session state.
 
-    This is defensive because `get_addresses_text()` may read from a different key than
-    the visible textarea widget, depending on your UI helpers.
+    Defensive because `get_addresses_text()` may read from a different key than the
+    visible textarea widget, depending on your UI helpers.
     """
     st.session_state["addresses_text_area"] = text
-
-    # Common alternate keys (safe no-op if unused)
     for k in ("addresses_text", "addresses", "addresses_input"):
         if k in st.session_state:
             st.session_state[k] = text
@@ -331,13 +315,14 @@ def _compute_optimization(
     cfg: RoutingAppConfig,
     routing_text: str,
     is_closed: bool,
-    show_road_overlay: bool,
-    advanced_ui: bool,
 ) -> OptimizationResult:
     """
     Run the end-to-end optimization pipeline.
 
-    Raises exceptions for the caller to surface appropriately.
+    Raises:
+        ValueError: for user-facing validation errors.
+        GeocodingError: geocoding failures.
+        Exception: unexpected errors.
     """
     logs: list[str] = []
 
@@ -367,7 +352,6 @@ def _compute_optimization(
 
         offending = [i for i, d in enumerate(snapped_distances_m) if d > cfg.max_snap_distance_m]
         if offending:
-            # Caller can show the per-address detail in advanced UI; here we return a clear error.
             raise ValueError(t("too_far_error", km=f"{cfg.max_snap_distance_m / 1000.0:.1f}"))
 
         with st.spinner(t("dist_matrix")):
@@ -377,7 +361,6 @@ def _compute_optimization(
         with timeblock("Checking connectivity", logs):
             assert_all_pairs_reachable(dist_matrix_raw)
 
-        # Symmetrize + ensure diagonal is 0
         c = np.array(dist_matrix_raw, dtype=float)
         c = 0.5 * (c + c.T)
         np.fill_diagonal(c, 0.0)
@@ -398,16 +381,8 @@ def _compute_optimization(
 
         ordered_addresses = [addresses[i] for i in route_indices]
 
-        total_km_original = route_length(
-            list(range(len(dist_matrix))),
-            dist_matrix,
-            closed=is_closed,
-        )
-        total_km_optimized = route_length(
-            route_indices,
-            dist_matrix,
-            closed=is_closed,
-        )
+        total_km_original = route_length(list(range(len(dist_matrix))), dist_matrix, closed=is_closed)
+        total_km_optimized = route_length(route_indices, dist_matrix, closed=is_closed)
 
         with timeblock("Building navigation URL", logs):
             maps_addresses = ordered_addresses + [ordered_addresses[0]] if is_closed else ordered_addresses
@@ -438,23 +413,14 @@ def _render_quick_preflight(*, cfg: RoutingAppConfig, routing_text: str) -> None
 
     st.caption("Input preview (after home + de-dup)")  # TODO: i18n
     preview_df = pd.DataFrame(
-        {
-            "#": list(range(1, len(addresses) + 1)),
-            "Address": [_summarize_address_label(a) for a in addresses],
-        }
+        {"#": list(range(1, len(addresses) + 1)), "Address": [_summarize_address_label(a) for a in addresses]}
     )
     st.dataframe(preview_df, use_container_width=True, hide_index=True)
 
 
-def _render_validation_tables(
-    *,
-    cfg: RoutingAppConfig,
-    result: OptimizationResult,
-    advanced_ui: bool,
-) -> None:
+def _render_validation_tables(*, result: OptimizationResult, advanced_ui: bool) -> None:
     """Render geocoding and snapping validation tables."""
     if not advanced_ui:
-        # Still give *some* trust signal in non-advanced UI.
         snap_km = (np.array(result.snapped_distances_m, dtype=float) / 1000.0).round(2)
         worst = float(np.max(snap_km)) if len(snap_km) else 0.0
         st.caption(f"Max snap distance: {worst:.2f} km")  # TODO: i18n
@@ -486,25 +452,16 @@ def _render_validation_tables(
             use_container_width=True,
             hide_index=True,
             column_config={
-                "Snap dist (km)": st.column_config.NumberColumn(
-                    t("snap_dist_km_col"),
-                    format="%.2f km",
-                ),
+                "Snap dist (km)": st.column_config.NumberColumn(t("snap_dist_km_col"), format="%.2f km"),
             },
         )
     except Exception:
         st.dataframe(snap_df, use_container_width=True, hide_index=True)
 
 
-def _render_results(
-    *,
-    cfg: RoutingAppConfig,
-    result: OptimizationResult,
-    advanced_ui: bool,
-    show_road_overlay: bool,
-) -> None:
+def _render_results(*, cfg: RoutingAppConfig, result: OptimizationResult, advanced_ui: bool, show_road_overlay: bool) -> None:
     """Render the optimized order and optional plots/matrix/logs."""
-    st.subheader(t("order_title") if advanced_ui else "Optimized order")  # TODO: i18n for fallback label
+    st.subheader(t("order_title") if advanced_ui else "Optimized order")  # TODO: i18n
 
     for k, addr in enumerate(result.ordered_addresses, start=1):
         st.write(f"{k}. {addr}")
@@ -520,7 +477,6 @@ def _render_results(
     if not advanced_ui:
         return
 
-    # Optional distance matrix
     with st.expander(t("dist_matrix_expander"), expanded=False):
         dist_df = _build_distance_matrix_df_km(result.dist_matrix, result.addresses)
         try:
@@ -532,7 +488,6 @@ def _render_results(
         except Exception:
             st.dataframe(dist_df, use_container_width=True)
 
-    # Optional plots (require graph+nodes)
     with st.expander("Maps / plots", expanded=False):  # TODO: i18n
         graph, nodes = _cached_drive_graph(str(cfg.data_dir), cfg.drive_prefix)
 
@@ -600,12 +555,12 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
     """
     Run the Streamlit routing app.
 
-    Re-engineering goals implemented here:
-    - Keep "simple vs full" selector (so you don't break translations),
-      but upgrade simple mode to include *essential trust signals*.
-    - Move heavy/optional UI into expanders (progressive disclosure).
-    - Separate: input -> optional reconcile -> optimize -> results.
-    - Add a typed OptimizationResult to simplify rendering.
+    Structure:
+    1) Mode + optional advanced toggles
+    2) Optional coverage map (lazy, via routing.coverage_map)
+    3) Addresses (OCR + textarea + drive buttons)
+    4) Optional reconciliation (advanced)
+    5) Optimize + results
     """
     _setup_logging(logfile=cfg.logfile)
     logging.info("Starting routing app: %s", cfg.store_filename)
@@ -615,7 +570,6 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
 
     init_state_if_missing(filename=cfg.store_filename)
 
-    # Keep existing mode selector for compatibility with your i18n keys
     ui_mode_label = st.radio(
         t("ui_mode"),
         [t("ui_simple"), t("ui_full")],
@@ -625,7 +579,6 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
     simple_mode = ui_mode_label == t("ui_simple")
     advanced_ui = not simple_mode
 
-    # Advanced-only: optional road overlay
     show_road_overlay = False
     if advanced_ui:
         overlay_label = st.radio(
@@ -636,13 +589,36 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
         )
         show_road_overlay = overlay_label == t("on")
 
-    # Inputs
+    # Optional coverage map (lazy import + lazy compute)
+    with st.expander(t("graph_coverage_title"), expanded=False):
+        # If you don't have this i18n key yet, replace with "Show coverage map"
+        show_cov = st.checkbox("Show coverage map", value=False)  # TODO: i18n
+        if show_cov:
+            from routing.coverage_map import render_coverage_map
+
+            subtitle = (
+                t("graph_coverage_subtitle_roi", roi=cfg.roi_name)
+                if cfg.roi_name
+                else t("graph_coverage_subtitle")
+            )
+
+            render_coverage_map(
+                data_dir=str(cfg.data_dir),
+                drive_prefix=cfg.drive_prefix,
+                roi_bbox_wgs84=cfg.roi_bbox_wgs84,
+                concavity_ratio=cfg.coverage_concavity_ratio,
+                clip_to_land=cfg.clip_coverage_to_land,
+                roi_name=cfg.roi_name,
+                title=t("graph_coverage_title"),
+                map_title=t("graph_coverage_map_title"),
+                subtitle=subtitle,
+            )
+
     default_text = ""
     ensure_addresses_loaded(default_text=default_text, filename=cfg.store_filename)
 
     st.header("1) Addresses")  # TODO: i18n
 
-    # OCR: always available, but detailed debug only in advanced UI
     if simple_mode:
         camera_ocr_widget(
             filename=cfg.store_filename,
@@ -665,30 +641,16 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
                 duplicate_first_on_overwrite=False,
             )
 
-    addresses_text_area(
-        label=t("addresses_label"),
-        height=200,
-        key="addresses_text_area",
-    )
+    addresses_text_area(label=t("addresses_label"), height=200, key="addresses_text_area")
 
-    drive_buttons_row(
-        default_text=default_text,
-        width="stretch",
-        rerun_after_reload=True,
-    )
+    drive_buttons_row(default_text=default_text, width="stretch", rerun_after_reload=True)
 
     if advanced_ui:
-        drive_version_loader(
-            default_text=default_text,
-            width="stretch",
-            rerun_after_load=True,
-        )
+        drive_version_loader(default_text=default_text, width="stretch", rerun_after_load=True)
 
     routing_text = get_addresses_text()
-
     _render_quick_preflight(cfg=cfg, routing_text=routing_text)
 
-    # Optional: reconciliation (advanced only), but with an "Apply" button to persist edits
     if advanced_ui and routing_text.strip():
         st.header("2) Clean up (optional)")  # TODO: i18n
         with st.expander("OCR → routing reconciliation", expanded=False):  # TODO: i18n
@@ -714,10 +676,7 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
 
             final_lines = [
                 str(a).strip()
-                for use, a in zip(
-                    edited["Use"].tolist(),
-                    edited["Final (editable)"].tolist(),
-                )
+                for use, a in zip(edited["Use"].tolist(), edited["Final (editable)"].tolist())
                 if bool(use) and str(a).strip()
             ]
             reconciled_text = "\n".join(final_lines)
@@ -733,101 +692,29 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
             with cols[2]:
                 st.caption("Tip: ‘Apply’ updates the textarea so your edits persist.")  # TODO: i18n
 
-    # Optional: coverage map (lazy)
-    st.header("3) Network coverage (optional)")  # TODO: i18n
-    with st.expander(t("graph_coverage_title"), expanded=False):
-        show_cov = st.checkbox("Show coverage map", value=False)  # TODO: i18n
-        if show_cov:
-            graph = None
-            nodes = None
-            roi_3857 = _roi_bbox_3857(cfg)
-
-            try:
-                with st.spinner(t("loading_network")):
-                    graph, nodes = _cached_drive_graph(str(cfg.data_dir), cfg.drive_prefix)
-
-                poly = _graph_coverage_polygon_xy_3857(
-                    graph=graph,
-                    nodes=nodes,
-                    roi_bbox_3857=roi_3857,
-                    concavity_ratio=float(cfg.coverage_concavity_ratio),
-                )
-
-                if poly is None:
-                    st.warning(t("graph_coverage_failed"))
-                else:
-                    if cfg.clip_coverage_to_land:
-                        try:
-                            land_union = _cached_land_union_3857()
-
-                            water_union = None
-                            if roi_3857 is not None:
-                                water_union = _cached_water_union_3857(
-                                    Polygon.from_bounds(*roi_3857)
-                                )
-
-                            poly = _clip_polygon_to_land_and_remove_water(
-                                poly,
-                                land_union_3857=land_union,
-                                water_union_3857=water_union,
-                            )
-                        except Exception as exc:
-                            st.warning(t("graph_coverage_landclip_error", error=str(exc)))
-
-                    if cfg.roi_name:
-                        st.caption(t("graph_coverage_subtitle_roi", roi=cfg.roi_name))
-                    else:
-                        st.caption(t("graph_coverage_subtitle"))
-
-                    fig_cov = _make_tiled_coverage_figure(
-                        poly_3857=poly,
-                        title=t("graph_coverage_map_title"),
-                        graph=graph,
-                        nodes=nodes,
-                        roi_bbox_3857=roi_3857,
-                    )
-                    st.pyplot(fig_cov, width="stretch")
-            except Exception as exc:
-                st.warning(t("graph_coverage_error", error=str(exc)))
-
-    # Optimization controls
-    st.header("4) Optimize")  # TODO: i18n
-
-    route_type_label = st.radio(
-        t("route_type"),
-        [t("route_closed"), t("route_open")],
-        index=0,
-    )
+    st.header("3) Optimize")  # TODO: i18n
+    route_type_label = st.radio(t("route_type"), [t("route_closed"), t("route_open")], index=0)
     is_closed = route_type_label == t("route_closed")
 
     optimize_clicked = st.button(t("optimize"), type="primary")
     if not optimize_clicked:
         return
 
-    # Run optimization and render results
     try:
-        result = _compute_optimization(
-            cfg=cfg,
-            routing_text=routing_text,
-            is_closed=is_closed,
-            show_road_overlay=show_road_overlay,
-            advanced_ui=advanced_ui,
-        )
+        result = _compute_optimization(cfg=cfg, routing_text=routing_text, is_closed=is_closed)
     except GeocodingError as exc:
         st.error(t("geocode_error", error=str(exc)))
         return
     except ValueError as exc:
-        # For preflight / validation failures where we intentionally raised ValueError with a user message
         st.error(str(exc))
-        if advanced_ui and "too_far_error" in str(exc):
-            st.caption("Some locations are too far from the road network nodes.")  # TODO: i18n
         return
     except Exception as exc:
-        # Generic unexpected
         st.error(t("geocode_unexpected", error=str(exc)))
         return
 
-    # Validation (trust signals) + results
-    st.header("5) Results")  # TODO: i18n
-    _render_validation_tables(cfg=cfg, result=result, advanced_ui=advanced_ui)
+    st.header("4) Results")  # TODO: i18n
+    _render_validation_tables(result=result, advanced_ui=advanced_ui)
     _render_results(cfg=cfg, result=result, advanced_ui=advanced_ui, show_road_overlay=show_road_overlay)
+
+
+__all__ = ["RoutingAppConfig", "run_routing_app"]
