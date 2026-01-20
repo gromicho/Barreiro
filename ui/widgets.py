@@ -61,8 +61,11 @@ def camera_ocr_widget(
     duplicate_first_on_overwrite: bool = False,
     key_prefix: str = 'camera_ocr',
 ) -> bool:
-    """
+    '''
     Mobile-friendly camera OCR widget.
+
+    Hides the Streamlit camera preview after a photo is captured (better UX on phones),
+    and shows the captured image full-width instead.
 
     Args:
         filename: Store filename for persistence/debug.
@@ -75,39 +78,53 @@ def camera_ocr_widget(
 
     Returns:
         True if addresses were applied to state, else False.
-    """
+    '''
     _ = home_address
 
     def k(name: str) -> str:
         '''Build a stable namespaced key for Streamlit session/widget state.'''
         return f'{key_prefix}.{name}'
 
-    # CSS guard against distorted images on mobile
-    st.markdown(
-        '''
-<style>
-img { height: auto !important; }
-[data-testid='stCameraInput'] img { height: auto !important; }
-</style>
-''',
-        unsafe_allow_html=True,
-    )
-
     st.subheader(t('camera_ocr_title'))
 
-    photo = st.camera_input(t('camera_ocr_take_photo'), key=k('camera_input'))
-    if photo is None:
+    # This flag controls whether we keep showing the camera widget after capture.
+    if k('hide_camera_after_capture') not in st.session_state:
+        st.session_state[k('hide_camera_after_capture')] = True
+
+    hide_camera_after_capture = bool(st.session_state.get(k('hide_camera_after_capture'), True))
+
+    # If we already have an image cached in session_state, do NOT show the camera widget again.
+    # This prevents the narrow preview from staying on screen on mobile.
+    image_bytes: bytes | None = st.session_state.get(k("image_bytes"))
+    mime_type: str = st.session_state.get(k("mime_type"), "image/jpeg")
+
+    photo = None
+    if not (hide_camera_after_capture and image_bytes):
+        photo = st.camera_input(t('camera_ocr_take_photo'), key=k('camera_input'))
+
+    if photo is None and image_bytes is None:
         return False
 
-    image_bytes = photo.getvalue()
-    mime_type = photo.type or 'image/jpeg'
+    if photo is not None:
+        image_bytes = photo.getvalue()
+        mime_type = photo.type or 'image/jpeg'
+        st.session_state[k('image_bytes')] = image_bytes
+        st.session_state[k('mime_type')] = mime_type
 
-    # Show captured photo using Streamlit renderer (fixes narrow mobile preview)
-    st.image(
-        image_bytes,
-        caption=t('camera_ocr_preview'),
-        use_container_width=True,
-    )
+    # Show captured photo in full width
+    if image_bytes is not None:
+        st.image(image_bytes, use_container_width=True)
+
+    # Allow retake (shows the camera widget again)
+    retake_clicked = st.button(t('retake') if 'retake' in t.__code__.co_consts else 'Retake photo', width='stretch', key=k('retake_btn'))
+    if retake_clicked:
+        for name in ('image_bytes', 'mime_type', 'last_key', 'saved_path', 'raw', 'addresses', 'preview_text'):
+            st.session_state.pop(k(name), None)
+        st.rerun()
+        return False
+
+    # From here on, we must have image_bytes
+    assert image_bytes is not None
 
     cache_key = (len(image_bytes), mime_type)
     if st.session_state.get(k('last_key')) != cache_key:
@@ -182,20 +199,36 @@ img { height: auto !important; }
             combined = (existing + '\n' + text_to_apply).strip() if existing else text_to_apply
             set_addresses_text(combined)
 
-        st.success(
-            t(
-                'ocr_loaded_n',
-                n=len([ln for ln in text_to_apply.splitlines() if ln.strip()]),
-            )
-        )
-        for name in ('last_key', 'saved_path', 'raw', 'addresses', 'preview_text'):
+        st.success(t('ocr_loaded_n', n=len([ln for ln in text_to_apply.splitlines() if ln.strip()])))
+
+        for name in (
+            'hide_camera_after_capture',
+            'image_bytes',
+            'mime_type',
+            'last_key',
+            'saved_path',
+            'raw',
+            'addresses',
+            'preview_text',
+        ):
             st.session_state.pop(k(name), None)
+
         st.rerun()
         return True
 
     if cancel_clicked:
-        for name in ('last_key', 'saved_path', 'raw', 'addresses', 'preview_text'):
+        for name in (
+            'hide_camera_after_capture',
+            'image_bytes',
+            'mime_type',
+            'last_key',
+            'saved_path',
+            'raw',
+            'addresses',
+            'preview_text',
+        ):
             st.session_state.pop(k(name), None)
+
         st.rerun()
         return False
 
