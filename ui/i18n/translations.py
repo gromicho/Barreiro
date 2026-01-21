@@ -466,3 +466,33 @@ TRANSLATIONS['pt'].update(
     }
 )
 
+TRANSLATIONS['en'].update(
+    {
+        'graph_coverage_title': 'Road network coverage',
+        'graph_coverage_subtitle': 'Coverage of the available road network.',
+        'graph_coverage_subtitle_roi': 'Coverage of the available road network (ROI: {roi}).',
+        'graph_coverage_map_title': 'Coverage map',
+        'camera_ocr_expander': 'Camera OCR',
+    }
+)
+
+TRANSLATIONS['nl'].update(
+    {
+        'graph_coverage_title': 'Dekking van het wegennet',
+        'graph_coverage_subtitle': 'Dekking van het beschikbare wegennet.',
+        'graph_coverage_subtitle_roi': 'Dekking van het beschikbare wegennet (ROI: {roi}).',
+        'graph_coverage_map_title': 'Dekkingskaart',
+        'camera_ocr_expander': 'Camera OCR',
+    }
+)
+
+TRANSLATIONS['pt'].update(
+    {
+        'graph_coverage_title': 'Cobertura da rede viária',
+        'graph_coverage_subtitle': 'Cobertura da rede viária disponível.',
+        'graph_coverage_subtitle_roi': 'Cobertura da rede viária disponível (ROI: {roi}).',
+        'graph_coverage_map_title': 'Mapa de cobertura',
+        'camera_ocr_expander': 'OCR por câmara',
+    }
+)
+
