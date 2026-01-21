@@ -70,6 +70,7 @@ def camera_ocr_widget(
     show_debug: bool = False,
     duplicate_first_on_overwrite: bool = False,
     key_prefix: str = 'camera_ocr',
+    allow_upload_fallback: bool = True,
 ) -> bool:
     """
     Mobile-friendly camera OCR widget.
@@ -77,10 +78,11 @@ def camera_ocr_widget(
     Notes on focus:
         `st.camera_input` delegates capture to the mobile browser's camera UI.
         Streamlit cannot force autofocus, macro mode, or resolution via constraints here.
-        This widget therefore provides UX hints and an upload fallback.
+        This widget can optionally provide an upload fallback (advanced mode only).
 
     Behavior:
         - Captures an image via `st.camera_input` (or uses cached bytes).
+        - Optionally allows uploading a photo as fallback.
         - Shows the captured image full-width.
         - Extracts addresses via OCR, then shows an editable preview.
         - Applies preview text into the addresses textarea (overwrite or append).
@@ -93,6 +95,7 @@ def camera_ocr_widget(
         show_debug: Whether to show debug expander with raw OCR output.
         duplicate_first_on_overwrite: Whether to duplicate first extracted line when overwriting.
         key_prefix: Prefix to namespace Streamlit widget keys and session keys.
+        allow_upload_fallback: If True, show the upload/drop fallback widget.
 
     Returns:
         True if addresses were applied to state, else False.
@@ -118,16 +121,12 @@ def camera_ocr_widget(
             pass
         return fallback
 
-    st.subheader(t('camera_ocr_title'))
+    # Make subheader translatable even if a key is missing in some locales.
+    st.subheader(_label('camera_ocr_title', 'Camera OCR'))
 
     with st.expander(_label('camera_focus_help', 'Having trouble focusing?'), expanded=False):
-        st.markdown(
-            '- Tap on the text to focus/expose.\n'
-            '- Add more light (lamp / window) and avoid glare.\n'
-            '- Move the phone a little farther away, then slowly closer.\n'
-            '- Try 2× zoom instead of moving very close (helps minimum focus distance).\n'
-            '- Hold still for 1–2 seconds after tapping to let autofocus settle.\n'
-        )
+        # All visible text goes through _label/t(). Use a single markdown blob so we only add one i18n key.
+        st.markdown(_label('camera_focus_help_bullets', '- Tap on the text to focus/expose.\n'))
 
     if k('hide_camera_after_capture') not in st.session_state:
         st.session_state[k('hide_camera_after_capture')] = True
@@ -137,20 +136,23 @@ def camera_ocr_widget(
     image_bytes: bytes | None = st.session_state.get(k('image_bytes'))
     mime_type: str = str(st.session_state.get(k('mime_type'), 'image/jpeg'))
 
-    uploaded = st.file_uploader(
-        _label('camera_ocr_upload_fallback', 'Or upload a photo'),
-        type=['jpg', 'jpeg', 'png', 'webp'],
-        key=k('upload_fallback'),
-    )
-    if uploaded is not None:
-        image_bytes = uploaded.getvalue()
-        mime_type = uploaded.type or 'image/jpeg'
-        st.session_state[k('image_bytes')] = image_bytes
-        st.session_state[k('mime_type')] = mime_type
+    uploaded = None
+    if allow_upload_fallback:
+        uploaded = st.file_uploader(
+            _label('camera_ocr_upload_fallback', 'Or upload a photo'),
+            type=['jpg', 'jpeg', 'png', 'webp'],
+            key=k('upload_fallback'),
+        )
+
+        if uploaded is not None:
+            image_bytes = uploaded.getvalue()
+            mime_type = uploaded.type or 'image/jpeg'
+            st.session_state[k('image_bytes')] = image_bytes
+            st.session_state[k('mime_type')] = mime_type
 
     photo = None
     if uploaded is None and not (hide_camera_after_capture and image_bytes):
-        photo = st.camera_input(t('camera_ocr_take_photo'), key=k('camera_input'))
+        photo = st.camera_input(_label('camera_ocr_take_photo', 'Take a photo'), key=k('camera_input'))
 
     if photo is None and image_bytes is None:
         return False
@@ -162,6 +164,7 @@ def camera_ocr_widget(
         st.session_state[k('mime_type')] = mime_type
 
     if image_bytes is not None:
+        # No visible strings here.
         st.image(image_bytes, width='stretch')
 
     retake_clicked = st.button(
@@ -231,6 +234,7 @@ def camera_ocr_widget(
         st.session_state[k('preview_text')] = '\n'.join(lines).strip()
 
     st.markdown('---')
+
     preview = st.text_area(
         label=t('addresses_label'),
         value=str(st.session_state.get(k('preview_text'), '')),
@@ -282,6 +286,7 @@ def camera_ocr_widget(
             st.code(str(st.session_state.get(k('raw'), '')), language='json')
 
     return False
+
 
 
 def addresses_text_area(

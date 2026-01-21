@@ -1,5 +1,7 @@
 """Translation helper."""
 
+import logging
+
 from ui.i18n.state import get_language
 from ui.i18n.translations import TRANSLATIONS
 
@@ -24,7 +26,9 @@ def t(key: str, **kwargs: object) -> str:
     if kwargs:
         try:
             return text.format(**kwargs)
-        except Exception:
+        except Exception as exc:
+            # Optional: log once per key to avoid noise
+            logging.warning('i18n format failed for key=%s: %s', key, exc)
             return text
 
     return text

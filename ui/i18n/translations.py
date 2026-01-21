@@ -290,3 +290,179 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         'cancel': 'Cancelar',
     },
 }
+
+# Add these keys to each language inside TRANSLATIONS (keeping your existing ones).
+# I’m showing just the NEW/ALIASED entries to paste into each dict.
+
+TRANSLATIONS['en'].update(
+    {
+        # --- app.py additions ---
+        'input_preview_caption': 'Input preview (after home + de-dup)',
+        'col_num': '#',
+        'col_address': 'Address',
+        'col_lat': 'Lat',
+        'col_lon': 'Lon',
+        'col_snap_dist_km': 'Snap dist (km)',
+        'max_snap_distance_caption': 'Max snap distance: {km} km',
+        'geocoded_title': 'Geocoding and snapping',
+        'snapping_overview_title': 'Snapping overview',
+        'snap_dist_km_col': 'Snap dist (km)',
+        'order_title_simple': 'Optimized order',
+        'dist_matrix_expander': 'Distance matrix',
+        'maps_plots_expander': 'Maps / plots',
+        'show_coverage_map': 'Show coverage map',
+        'step1_addresses': '1) Addresses',
+        'step2_cleanup_optional': '2) Clean up (optional)',
+        'reconcile_expander': 'OCR → routing reconciliation',
+        'reconcile_col_use': 'Use',
+        'reconcile_col_captured': 'Captured',
+        'reconcile_col_final': 'Final (editable)',
+        'reconcile_col_note': 'Note',
+        'apply_to_input': 'Apply to input',
+        'use_for_this_run_only': 'Use for this run only',
+        'reconcile_tip_apply_persists': "Tip: 'Apply' updates the textarea so your edits persist.",
+        'step3_optimize': '3) Optimize',
+        'step4_results': '4) Results',
+        'reconcile_note_home_excluded': 'Looks like home address (excluded)',
+        'reconcile_note_near_duplicate': 'Near-duplicate of row {row} (excluded)',
+
+        # --- camera_ocr_widget additions / alignment ---
+        'camera_focus_help': 'Having trouble focusing?',
+        'camera_focus_help_bullets': (
+            '- Tap on the text to focus/expose.\n'
+            '- Add more light (lamp / window) and avoid glare.\n'
+            '- Move the phone a little farther away, then slowly closer.\n'
+            '- Try 2× zoom instead of moving very close (helps minimum focus distance).\n'
+            '- Hold still for 1–2 seconds after tapping to let autofocus settle.\n'
+        ),
+        'camera_ocr_upload_fallback': 'Or upload a photo',
+        'retake': 'Retake photo',
+
+        # These keys are used by the pasted widget; keep your existing ones too.
+        'ocr_no_addresses': 'No addresses found.',
+        'ocr_debug': 'OCR debug',
+        'dropbox_path': 'Dropbox path: {path}',
+        'ocr_loaded_n': 'Loaded {n} addresses into the input box.',
+
+        # Backward-compatible aliases (if other code still uses the older keys you already had)
+        'ocr_none_found': 'No addresses found.',
+        'ocr_debug_title': 'OCR debug',
+        'debug_dropbox_path': 'Dropbox path: {path}',
+        'ocr_loaded_addresses_ok': 'Loaded {count} addresses into the input box.',
+    }
+)
+
+TRANSLATIONS['nl'].update(
+    {
+        # --- app.py additions ---
+        'input_preview_caption': 'Voorbeeld invoer (na thuis + ontdubbelen)',
+        'col_num': '#',
+        'col_address': 'Adres',
+        'col_lat': 'Lat',
+        'col_lon': 'Lon',
+        'col_snap_dist_km': 'Snap-afstand (km)',
+        'max_snap_distance_caption': 'Maximale snap-afstand: {km} km',
+        'geocoded_title': 'Geocoding en snapping',
+        'snapping_overview_title': 'Snapping-overzicht',
+        'snap_dist_km_col': 'Snap-afstand (km)',
+        'order_title_simple': 'Geoptimaliseerde volgorde',
+        'dist_matrix_expander': 'Afstandsmatrix',
+        'maps_plots_expander': 'Kaarten / plots',
+        'show_coverage_map': 'Toon dekkingskaart',
+        'step1_addresses': '1) Adressen',
+        'step2_cleanup_optional': '2) Opschonen (optioneel)',
+        'reconcile_expander': 'OCR → route-reconciliatie',
+        'reconcile_col_use': 'Gebruik',
+        'reconcile_col_captured': 'Gevangen',
+        'reconcile_col_final': 'Eindtekst (bewerkbaar)',
+        'reconcile_col_note': 'Opmerking',
+        'apply_to_input': 'Toepassen op invoer',
+        'use_for_this_run_only': 'Alleen voor deze run gebruiken',
+        'reconcile_tip_apply_persists': "Tip: 'Toepassen' werkt het tekstvak bij zodat je edits blijven staan.",
+        'step3_optimize': '3) Optimaliseren',
+        'step4_results': '4) Resultaten',
+        'reconcile_note_home_excluded': 'Lijkt op thuisadres (uitgesloten)',
+        'reconcile_note_near_duplicate': 'Bijna-duplicaat van rij {row} (uitgesloten)',
+
+        # --- camera_ocr_widget additions / alignment ---
+        'camera_focus_help': 'Problemen met scherpstellen?',
+        'camera_focus_help_bullets': (
+            '- Tik op de tekst om te focussen/belichting te zetten.\n'
+            '- Zorg voor meer licht (lamp/raam) en vermijd schittering.\n'
+            '- Houd de telefoon iets verder weg en ga dan langzaam dichterbij.\n'
+            '- Probeer 2× zoom i.p.v. heel dichtbij (helpt bij minimale focusafstand).\n'
+            '- Blijf 1–2 seconden stil na het tikken zodat autofocus kan stabiliseren.\n'
+        ),
+        'camera_ocr_upload_fallback': 'Of upload een foto',
+        'retake': 'Foto opnieuw maken',
+
+        'ocr_no_addresses': 'Geen adressen gevonden.',
+        'ocr_debug': 'OCR debug',
+        'dropbox_path': 'Dropbox-pad: {path}',
+        'ocr_loaded_n': '{n} adressen in het invoerveld geladen.',
+
+        # Backward-compatible aliases
+        'ocr_none_found': 'Geen adressen gevonden.',
+        'ocr_debug_title': 'OCR debug',
+        'debug_dropbox_path': 'Dropbox-pad: {path}',
+        'ocr_loaded_addresses_ok': '{count} adressen in het invoerveld geladen.',
+    }
+)
+
+TRANSLATIONS['pt'].update(
+    {
+        # --- app.py additions ---
+        'input_preview_caption': 'Pré-visualização (após casa + remoção de duplicados)',
+        'col_num': '#',
+        'col_address': 'Endereço',
+        'col_lat': 'Lat',
+        'col_lon': 'Lon',
+        'col_snap_dist_km': 'Dist. de ajuste (km)',
+        'max_snap_distance_caption': 'Distância máxima de ajuste: {km} km',
+        'geocoded_title': 'Geocodificação e ajuste à rede',
+        'snapping_overview_title': 'Resumo do ajuste à rede',
+        'snap_dist_km_col': 'Distância de ajuste (km)',
+        'order_title_simple': 'Ordem otimizada',
+        'dist_matrix_expander': 'Matriz de distâncias',
+        'maps_plots_expander': 'Mapas / gráficos',
+        'show_coverage_map': 'Mostrar mapa de cobertura',
+        'step1_addresses': '1) Endereços',
+        'step2_cleanup_optional': '2) Limpeza (opcional)',
+        'reconcile_expander': 'Reconciliação OCR → rota',
+        'reconcile_col_use': 'Usar',
+        'reconcile_col_captured': 'Capturado',
+        'reconcile_col_final': 'Final (editável)',
+        'reconcile_col_note': 'Nota',
+        'apply_to_input': 'Aplicar à entrada',
+        'use_for_this_run_only': 'Usar apenas nesta execução',
+        'reconcile_tip_apply_persists': "Dica: 'Aplicar' atualiza a caixa de texto para manter as edições.",
+        'step3_optimize': '3) Otimizar',
+        'step4_results': '4) Resultados',
+        'reconcile_note_home_excluded': 'Parece o endereço de casa (excluído)',
+        'reconcile_note_near_duplicate': 'Quase duplicado da linha {row} (excluído)',
+
+        # --- camera_ocr_widget additions / alignment ---
+        'camera_focus_help': 'Com dificuldade em focar?',
+        'camera_focus_help_bullets': (
+            '- Toque no texto para focar/ajustar a exposição.\n'
+            '- Adicione mais luz (candeeiro/janela) e evite reflexos.\n'
+            '- Afaste um pouco o telemóvel e aproxime lentamente.\n'
+            '- Experimente zoom 2× em vez de aproximar demasiado (ajuda na distância mínima de foco).\n'
+            '- Mantenha-se imóvel durante 1–2 segundos após tocar para o autofocus estabilizar.\n'
+        ),
+        'camera_ocr_upload_fallback': 'Ou carregue uma foto',
+        'retake': 'Tirar outra foto',
+
+        'ocr_no_addresses': 'Não foram encontrados endereços.',
+        'ocr_debug': 'Depuração do OCR',
+        'dropbox_path': 'Caminho no Dropbox: {path}',
+        'ocr_loaded_n': 'Foram carregados {n} endereços na caixa de texto.',
+
+        # Backward-compatible aliases
+        'ocr_none_found': 'Não foram encontrados endereços.',
+        'ocr_debug_title': 'Depuração do OCR',
+        'debug_dropbox_path': 'Caminho no Dropbox: {path}',
+        'ocr_loaded_addresses_ok': 'Foram carregados {count} endereços na caixa de texto.',
+    }
+)
+
