@@ -51,6 +51,16 @@ def _get_openai_client() -> OpenAI:
     return OpenAI(api_key=api_key)
 
 
+@st.cache_data(show_spinner=False, ttl=60)
+def _cached_versions_for_ui(filename: str) -> list[dict[str, object]]:
+    """
+    Cache the address version listing to avoid hitting Dropbox on every rerun.
+
+    ttl=60 means: at most one refresh per minute per filename.
+    """
+    return get_address_versions_for_ui(filename=filename)
+
+
 def camera_ocr_widget(
     *,
     filename: str | None = None,
@@ -110,7 +120,6 @@ def camera_ocr_widget(
 
     st.subheader(t('camera_ocr_title'))
 
-    # Practical focusing tips (since we cannot control autofocus via st.camera_input constraints)
     with st.expander(_label('camera_focus_help', 'Having trouble focusing?'), expanded=False):
         st.markdown(
             '- Tap on the text to focus/expose.\n'
@@ -125,11 +134,9 @@ def camera_ocr_widget(
 
     hide_camera_after_capture = bool(st.session_state.get(k('hide_camera_after_capture'), True))
 
-    # Cached image bytes (avoid keeping the narrow preview on screen)
     image_bytes: bytes | None = st.session_state.get(k('image_bytes'))
     mime_type: str = str(st.session_state.get(k('mime_type'), 'image/jpeg'))
 
-    # Optional upload fallback (often yields higher-res than some browser camera previews)
     uploaded = st.file_uploader(
         _label('camera_ocr_upload_fallback', 'Or upload a photo'),
         type=['jpg', 'jpeg', 'png', 'webp'],
@@ -154,11 +161,9 @@ def camera_ocr_widget(
         st.session_state[k('image_bytes')] = image_bytes
         st.session_state[k('mime_type')] = mime_type
 
-    # Show captured photo full width
     if image_bytes is not None:
-        st.image(image_bytes, use_container_width=True)
+        st.image(image_bytes, width='stretch')
 
-    # Allow retake (shows the camera widget again)
     retake_clicked = st.button(
         _label('retake', 'Retake photo'),
         width='stretch',
@@ -170,7 +175,6 @@ def camera_ocr_widget(
         st.rerun()
         return False
 
-    # From here on, we must have image_bytes
     assert image_bytes is not None
 
     cache_key = (len(image_bytes), mime_type)
@@ -331,7 +335,6 @@ def drive_buttons_row(
         width: Streamlit button width.
         rerun_after_reload: If True, rerun after reload.
     """
-    _ = default_text  # used inside handlers, kept for API symmetry
     if save_label is None:
         save_label = t('save_addresses')
     if reload_label is None:
@@ -367,7 +370,10 @@ def drive_version_loader(
     """
     UI control to load a specific saved address version.
 
-    Intended for the "Full" UI only.
+    Intended for the 'Full' UI only.
+
+    Network policy:
+        Version listing is cached (ttl) to avoid hitting Dropbox on every rerun.
 
     Args:
         default_text: Text to restore if storage is empty.
@@ -375,7 +381,7 @@ def drive_version_loader(
         rerun_after_load: If True, rerun after load.
     """
     filename = get_store_filename()
-    versions = get_address_versions_for_ui(filename=filename)
+    versions = _cached_versions_for_ui(filename)
 
     if not versions:
         st.caption(t('no_versions'))

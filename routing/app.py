@@ -37,31 +37,63 @@ from ui.widgets import (
     drive_version_loader,
 )
 
-LOGFILE_DEFAULT: str = "routing_time_log.txt"
+LOGFILE_DEFAULT: str = 'routing_time_log.txt'
 MAX_SNAP_DISTANCE_M_DEFAULT: float = 5000.0
 _NEAR_DUPLICATE_THRESHOLD: float = 0.92
 
 
 def _setup_logging(*, logfile: str) -> None:
     """Configure logging once per process."""
-    if getattr(_setup_logging, "_configured", False):
+    if getattr(_setup_logging, '_configured', False):
         return
 
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
+        format='%(asctime)s [%(levelname)s] %(message)s',
         handlers=[
-            logging.FileHandler(logfile, mode="a", encoding="utf-8"),
+            logging.FileHandler(logfile, mode='a', encoding='utf-8'),
             logging.StreamHandler(),
         ],
     )
-    setattr(_setup_logging, "_configured", True)
+    setattr(_setup_logging, '_configured', True)
 
 
 @st.cache_resource(show_spinner=False)
 def _cached_drive_graph(data_dir_str: str, drive_prefix: str) -> tuple[object, object]:
     """Load and cache the drive graph per (data_dir, drive_prefix)."""
     return load_drive_graph(data_dir=Path(data_dir_str), drive_prefix=drive_prefix)
+
+
+def get_drive_graph_once_per_session(*, data_dir: Path | str, drive_prefix: str) -> tuple[object, object]:
+    """
+    Return the (graph, nodes) for the drive network, loading it at most once per Streamlit session.
+
+    Streamlit reruns the script on every widget interaction. If the drive graph load is ever
+    retriggered (cache misses due to path differences, etc.), the UI becomes very slow.
+
+    This function:
+    - canonicalizes data_dir to an absolute resolved path string (stable cache key)
+    - stores the loaded (graph, nodes) in st.session_state (session singleton)
+
+    Args:
+        data_dir: Directory containing drive network data (Path or str).
+        drive_prefix: Dataset prefix for the drive network.
+
+    Returns:
+        (graph, nodes) as returned by load_drive_graph().
+    """
+    data_dir_key = str(Path(data_dir).resolve())
+    drive_prefix_key = str(drive_prefix)
+
+    state_key = f'_drive_graph:{data_dir_key}:{drive_prefix_key}'
+    cached = st.session_state.get(state_key)
+
+    if isinstance(cached, tuple) and len(cached) == 2 and cached[0] is not None and cached[1] is not None:
+        return cached[0], cached[1]
+
+    graph, nodes = _cached_drive_graph(data_dir_key, drive_prefix_key)
+    st.session_state[state_key] = (graph, nodes)
+    return graph, nodes
 
 
 @dataclass(frozen=True)
@@ -83,10 +115,10 @@ class RoutingAppConfig:
     # ratio in (0, 1]. Smaller => more concave. 1.0 ~ convex hull.
     coverage_concavity_ratio: float = 0.25
 
-    # Whether to remove water by clipping coverage polygon to land
+    # Whether to clip coverage polygon to land (water removal is handled elsewhere if enabled)
     clip_coverage_to_land: bool = True
 
-    data_dir: Path = Path("data")
+    data_dir: Path = Path('data')
     logfile: str = LOGFILE_DEFAULT
     max_snap_distance_m: float = MAX_SNAP_DISTANCE_M_DEFAULT
 
@@ -120,7 +152,7 @@ class AddressRow:
     captured: str
     final: str
     include: bool
-    note: str = ""
+    note: str = ''
 
 
 def _parse_addresses(text: str) -> list[str]:
@@ -130,30 +162,30 @@ def _parse_addresses(text: str) -> list[str]:
 
 def _summarize_address_label(address: str) -> str:
     """Produce a compact address label for UI."""
-    parts = [p.strip() for p in address.split(",") if p.strip()]
+    parts = [p.strip() for p in address.split(',') if p.strip()]
     if not parts:
         return address.strip()
 
     trailing_countries = {
-        "portugal",
-        "the netherlands",
-        "netherlands",
-        "nederland",
-        "belgium",
-        "belgië",
-        "spain",
-        "españa",
-        "france",
-        "germany",
-        "deutschland",
-        "luxembourg",
-        "luxemburg",
+        'portugal',
+        'the netherlands',
+        'netherlands',
+        'nederland',
+        'belgium',
+        'belgië',
+        'spain',
+        'españa',
+        'france',
+        'germany',
+        'deutschland',
+        'luxembourg',
+        'luxemburg',
     }
 
     if parts[-1].casefold() in trailing_countries and len(parts) >= 2:
         parts = parts[:-1]
 
-    return ", ".join(parts)
+    return ', '.join(parts)
 
 
 def _build_input_addresses(*, cfg: RoutingAppConfig, addresses_text: str) -> list[str]:
@@ -226,7 +258,7 @@ def _build_distance_matrix_df_km(dist_matrix_raw_units: list[list[float]], addre
     Build a DataFrame to display a distance matrix in Streamlit (km).
     """
     n = len(dist_matrix_raw_units)
-    row_labels = [f"{i}. {_summarize_address_label(a)}" for i, a in enumerate(addresses, start=1)]
+    row_labels = [f'{i}. {_summarize_address_label(a)}' for i, a in enumerate(addresses, start=1)]
     col_labels = [str(i) for i in range(1, n + 1)]
     km = _distance_matrix_to_km(dist_matrix_raw_units).round(1)
     return pd.DataFrame(km, index=row_labels, columns=col_labels)
@@ -239,9 +271,9 @@ def _normalize_address_line(line: str) -> str:
     Removes bullets/numbering, collapses whitespace, trims punctuation.
     """
     s = line.strip()
-    s = re.sub(r"^\s*([-\u2022*]|(\d+\s*[\).\:-]))\s*", "", s)
-    s = re.sub(r"\s+", " ", s)
-    return s.strip(" ,;")
+    s = re.sub(r'^\s*([-\u2022*]|(\d+\s*[\).\:-]))\s*', '', s)
+    s = re.sub(r'\s+', ' ', s)
+    return s.strip(' ,;')
 
 
 def _similar(a: str, b: str) -> float:
@@ -266,10 +298,10 @@ def _reconcile_addresses(lines: list[str], *, home_address: str) -> list[Address
 
     for c in cleaned:
         include = True
-        note = ""
+        note = ''
         if home and _similar(c, home) >= _NEAR_DUPLICATE_THRESHOLD:
             include = False
-            note = "Looks like home address (excluded)"
+            note = 'Looks like home address (excluded)'
         rows.append(AddressRow(captured=c, final=c, include=include, note=note))
 
     for i in range(len(rows)):
@@ -283,7 +315,7 @@ def _reconcile_addresses(lines: list[str], *, home_address: str) -> list[Address
                     captured=rows[j].captured,
                     final=rows[j].final,
                     include=False,
-                    note=f"Near-duplicate of row {i + 1} (excluded)",
+                    note=f'Near-duplicate of row {i + 1} (excluded)',
                 )
 
     return rows
@@ -296,17 +328,20 @@ def _set_addresses_text_in_state(text: str) -> None:
     Defensive because `get_addresses_text()` may read from a different key than the
     visible textarea widget, depending on your UI helpers.
     """
-    st.session_state["addresses_text_area"] = text
-    for k in ("addresses_text", "addresses", "addresses_input"):
+    st.session_state['addresses_text_area'] = text
+    for k in ('addresses_text', 'addresses', 'addresses_input'):
         if k in st.session_state:
             st.session_state[k] = text
 
 
 def _load_graph_and_nodes(*, cfg: RoutingAppConfig, logs: list[str]) -> tuple[object, object]:
-    """Load drive graph + nodes using cache; record timing logs."""
-    with st.spinner(t("loading_network")):
-        with timeblock("Loading drive graph", logs):
-            graph, nodes = _cached_drive_graph(str(cfg.data_dir), cfg.drive_prefix)
+    """Load drive graph + nodes once per session; record timing logs."""
+    with st.spinner(t('loading_network')):
+        with timeblock('Loading drive graph', logs):
+            graph, nodes = get_drive_graph_once_per_session(
+                data_dir=cfg.data_dir,
+                drive_prefix=cfg.drive_prefix,
+            )
     return graph, nodes
 
 
@@ -326,18 +361,18 @@ def _compute_optimization(
     """
     logs: list[str] = []
 
-    with timeblock("Total optimization run", logs):
+    with timeblock('Total optimization run', logs):
         addresses = _build_input_addresses(cfg=cfg, addresses_text=routing_text)
 
         if len(addresses) < 2:
-            raise ValueError(t("need_two"))
+            raise ValueError(t('need_two'))
         if (not is_closed) and len(addresses) < 3:
-            raise ValueError(t("need_three_open"))
+            raise ValueError(t('need_three_open'))
 
         graph, nodes = _load_graph_and_nodes(cfg=cfg, logs=logs)
 
-        with st.spinner(t("geocoding")):
-            with timeblock("Geocoding addresses", logs):
+        with st.spinner(t('geocoding')):
+            with timeblock('Geocoding addresses', logs):
                 coords = geocode_addresses(
                     addresses=addresses,
                     bbox=cfg.roi_bbox_wgs84,
@@ -346,19 +381,19 @@ def _compute_optimization(
                     throttle_s=0.0,
                 )
 
-        with st.spinner(t("snapping")):
-            with timeblock("Snapping coords to nodes", logs):
+        with st.spinner(t('snapping')):
+            with timeblock('Snapping coords to nodes', logs):
                 snapped_node_ids, snapped_distances_m = snap_coords_to_nodes(coords, nodes)
 
         offending = [i for i, d in enumerate(snapped_distances_m) if d > cfg.max_snap_distance_m]
         if offending:
-            raise ValueError(t("too_far_error", km=f"{cfg.max_snap_distance_m / 1000.0:.1f}"))
+            raise ValueError(t('too_far_error', km=f'{cfg.max_snap_distance_m / 1000.0:.1f}'))
 
-        with st.spinner(t("dist_matrix")):
-            with timeblock("Computing distance matrix", logs):
+        with st.spinner(t('dist_matrix')):
+            with timeblock('Computing distance matrix', logs):
                 dist_matrix_raw = build_distance_matrix_networkx(snapped_node_ids, graph)
 
-        with timeblock("Checking connectivity", logs):
+        with timeblock('Checking connectivity', logs):
             assert_all_pairs_reachable(dist_matrix_raw)
 
         c = np.array(dist_matrix_raw, dtype=float)
@@ -369,8 +404,8 @@ def _compute_optimization(
         start_idx = 0
         end_idx = None if is_closed else len(dist_matrix) - 1
 
-        with st.spinner(t("gurobi")):
-            with timeblock("Route optimization", logs):
+        with st.spinner(t('gurobi')):
+            with timeblock('Route optimization', logs):
                 route_indices = solve_tsp_or_path_gurobi(
                     dist_matrix,
                     closed=is_closed,
@@ -384,7 +419,7 @@ def _compute_optimization(
         total_km_original = route_length(list(range(len(dist_matrix))), dist_matrix, closed=is_closed)
         total_km_optimized = route_length(route_indices, dist_matrix, closed=is_closed)
 
-        with timeblock("Building navigation URL", logs):
+        with timeblock('Building navigation URL', logs):
             maps_addresses = ordered_addresses + [ordered_addresses[0]] if is_closed else ordered_addresses
             maps_url = build_google_maps_url_from_addresses(maps_addresses)
 
@@ -408,14 +443,14 @@ def _render_quick_preflight(*, cfg: RoutingAppConfig, routing_text: str) -> None
     """Show a compact preview of what will be optimized (always cheap)."""
     addresses = _build_input_addresses(cfg=cfg, addresses_text=routing_text)
     if not addresses:
-        st.info(t("need_two"))
+        st.info(t('need_two'))
         return
 
-    st.caption("Input preview (after home + de-dup)")  # TODO: i18n
+    st.caption('Input preview (after home + de-dup)')  # TODO: i18n
     preview_df = pd.DataFrame(
-        {"#": list(range(1, len(addresses) + 1)), "Address": [_summarize_address_label(a) for a in addresses]}
+        {'#': list(range(1, len(addresses) + 1)), 'Address': [_summarize_address_label(a) for a in addresses]}
     )
-    st.dataframe(preview_df, use_container_width=True, hide_index=True)
+    st.dataframe(preview_df, width='stretch', hide_index=True)
 
 
 def _render_validation_tables(*, result: OptimizationResult, advanced_ui: bool) -> None:
@@ -423,73 +458,79 @@ def _render_validation_tables(*, result: OptimizationResult, advanced_ui: bool) 
     if not advanced_ui:
         snap_km = (np.array(result.snapped_distances_m, dtype=float) / 1000.0).round(2)
         worst = float(np.max(snap_km)) if len(snap_km) else 0.0
-        st.caption(f"Max snap distance: {worst:.2f} km")  # TODO: i18n
+        st.caption(f'Max snap distance: {worst:.2f} km')  # TODO: i18n
         return
 
-    st.subheader(t("geocoded_title"))
+    st.subheader(t('geocoded_title'))
     geo_df = pd.DataFrame(
         {
-            "#": list(range(1, len(result.addresses) + 1)),
-            "Address": [_summarize_address_label(a) for a in result.addresses],
-            "Lat": [round(lat, 6) for (lat, _lon) in result.coords],
-            "Lon": [round(lon, 6) for (_lat, lon) in result.coords],
+            '#': list(range(1, len(result.addresses) + 1)),
+            'Address': [_summarize_address_label(a) for a in result.addresses],
+            'Lat': [round(lat, 6) for (lat, _lon) in result.coords],
+            'Lon': [round(lon, 6) for (_lat, lon) in result.coords],
         }
     )
-    st.dataframe(geo_df, use_container_width=True, hide_index=True)
+    st.dataframe(geo_df, width='stretch', hide_index=True)
 
-    st.subheader(t("snapping_overview_title"))
+    st.subheader(t('snapping_overview_title'))
     snap_km = np.array(result.snapped_distances_m, dtype=float) / 1000.0
     snap_df = pd.DataFrame(
         {
-            "#": list(range(1, len(result.addresses) + 1)),
-            "Address": [_summarize_address_label(a) for a in result.addresses],
-            "Snap dist (km)": np.round(snap_km, 2),
+            '#': list(range(1, len(result.addresses) + 1)),
+            'Address': [_summarize_address_label(a) for a in result.addresses],
+            'Snap dist (km)': np.round(snap_km, 2),
         }
     )
     try:
         st.dataframe(
             snap_df,
-            use_container_width=True,
+            width='stretch',
             hide_index=True,
             column_config={
-                "Snap dist (km)": st.column_config.NumberColumn(t("snap_dist_km_col"), format="%.2f km"),
+                'Snap dist (km)': st.column_config.NumberColumn(t('snap_dist_km_col'), format='%.2f km'),
             },
         )
     except Exception:
-        st.dataframe(snap_df, use_container_width=True, hide_index=True)
+        st.dataframe(snap_df, width='stretch', hide_index=True)
 
 
 def _render_results(*, cfg: RoutingAppConfig, result: OptimizationResult, advanced_ui: bool, show_road_overlay: bool) -> None:
     """Render the optimized order and optional plots/matrix/logs."""
-    st.subheader(t("order_title") if advanced_ui else "Optimized order")  # TODO: i18n
+    st.subheader(t('order_title') if advanced_ui else 'Optimized order')  # TODO: i18n
 
     for k, addr in enumerate(result.ordered_addresses, start=1):
-        st.write(f"{k}. {addr}")
+        st.write(f'{k}. {addr}')
 
     st.markdown(
-        f"**{t('total_distance_km')}**  \n"
-        f"- {t('orig_order')}: **{result.total_km_original:.2f}**  \n"
-        f"- {t('opt_order')}: **{result.total_km_optimized:.2f}**"
+        f'**{t("total_distance_km")}**  \n'
+        f'- {t("orig_order")}: **{result.total_km_original:.2f}**  \n'
+        f'- {t("opt_order")}: **{result.total_km_optimized:.2f}**'
     )
 
-    st.link_button(t("open_in_maps"), result.maps_url)
+    st.link_button(t('open_in_maps'), result.maps_url)
 
     if not advanced_ui:
         return
 
-    with st.expander(t("dist_matrix_expander"), expanded=False):
+    with st.expander(t('dist_matrix_expander'), expanded=False):
         dist_df = _build_distance_matrix_df_km(result.dist_matrix, result.addresses)
         try:
             st.dataframe(
                 dist_df,
-                use_container_width=True,
-                column_config={col: st.column_config.NumberColumn(col, format="%.1f km") for col in dist_df.columns},
+                width='stretch',
+                column_config={col: st.column_config.NumberColumn(col, format='%.1f km') for col in dist_df.columns},
             )
         except Exception:
-            st.dataframe(dist_df, use_container_width=True)
+            st.dataframe(dist_df, width='stretch')
 
-    with st.expander("Maps / plots", expanded=False):  # TODO: i18n
-        graph, nodes = _cached_drive_graph(str(cfg.data_dir), cfg.drive_prefix)
+    with st.expander('Maps / plots', expanded=False):  # TODO: i18n
+        # Prevent expensive re-plotting on every rerun unless user asks for it.
+        render_plots = st.checkbox('Render plots', value=False, key='render_plots')  # TODO: i18n
+        if not render_plots:
+            st.caption('Enable to generate maps (can take a moment).')  # TODO: i18n
+            st.stop()
+
+        graph, nodes = get_drive_graph_once_per_session(data_dir=cfg.data_dir, drive_prefix=cfg.drive_prefix)
 
         orig_coords = result.coords[:]
         opt_coords = [result.coords[i] for i in result.route_indices]
@@ -513,7 +554,7 @@ def _render_results(*, cfg: RoutingAppConfig, result: OptimizationResult, advanc
         snapped_ys_opt: list[float] | None = None
 
         if show_road_overlay:
-            with timeblock("Building road overlay geometries", result.logs):
+            with timeblock('Building road overlay geometries', result.logs):
                 road_xs_orig, road_ys_orig = route_nodes_to_edge_geometry_xy_3857(orig_node_ids, graph, nodes)
                 road_xs_opt, road_ys_opt = route_nodes_to_edge_geometry_xy_3857(opt_node_ids, graph, nodes)
                 snapped_xs_orig, snapped_ys_orig = snapped_nodes_xy_3857(orig_node_ids, nodes)
@@ -521,8 +562,8 @@ def _render_results(*, cfg: RoutingAppConfig, result: OptimizationResult, advanc
 
         fig_orig = make_matplotlib_route_map(
             orig_coords,
-            title=t("orig_order"),
-            color="blue",
+            title=t('orig_order'),
+            color='blue',
             road_xs=road_xs_orig,
             road_ys=road_ys_orig,
             snapped_xs=snapped_xs_orig,
@@ -530,8 +571,8 @@ def _render_results(*, cfg: RoutingAppConfig, result: OptimizationResult, advanc
         )
         fig_opt = make_matplotlib_route_map(
             opt_coords,
-            title=t("opt_order"),
-            color="red",
+            title=t('opt_order'),
+            color='red',
             road_xs=road_xs_opt,
             road_ys=road_ys_opt,
             snapped_xs=snapped_xs_opt,
@@ -540,13 +581,13 @@ def _render_results(*, cfg: RoutingAppConfig, result: OptimizationResult, advanc
 
         col_l, col_r = st.columns(2)
         with col_l:
-            st.markdown(f"**{t('orig_order')}**")
-            st.pyplot(fig_orig, width="stretch")
+            st.markdown(f'**{t("orig_order")}**')
+            st.pyplot(fig_orig, width='stretch')
         with col_r:
-            st.markdown(f"**{t('opt_order')}**")
-            st.pyplot(fig_opt, width="stretch")
+            st.markdown(f'**{t("opt_order")}**')
+            st.pyplot(fig_opt, width='stretch')
 
-    with st.expander(t("timinglog_expander"), expanded=False):
+    with st.expander(t('timinglog_expander'), expanded=False):
         for line in result.logs:
             st.write(line)
 
@@ -557,164 +598,162 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
 
     Structure:
     1) Mode + optional advanced toggles
-    2) Optional coverage map (lazy, via routing.coverage_map)
+    2) Optional coverage map
     3) Addresses (OCR + textarea + drive buttons)
     4) Optional reconciliation (advanced)
     5) Optimize + results
     """
     _setup_logging(logfile=cfg.logfile)
-    logging.info("Starting routing app: %s", cfg.store_filename)
+    logging.info('Starting routing app: %s', cfg.store_filename)
 
     language_selector(default_lang=None)
-    st.title(t("app_title", name=cfg.title_name, city=cfg.title_city))
+    st.title(t('app_title', name=cfg.title_name, city=cfg.title_city))
 
     init_state_if_missing(filename=cfg.store_filename)
 
     ui_mode_label = st.radio(
-        t("ui_mode"),
-        [t("ui_simple"), t("ui_full")],
+        t('ui_mode'),
+        [t('ui_simple'), t('ui_full')],
         index=0,
         horizontal=True,
     )
-    simple_mode = ui_mode_label == t("ui_simple")
+    simple_mode = ui_mode_label == t('ui_simple')
     advanced_ui = not simple_mode
 
     show_road_overlay = False
     if advanced_ui:
         overlay_label = st.radio(
-            t("road_overlay"),
-            [t("off"), t("on")],
+            t('road_overlay'),
+            [t('off'), t('on')],
             index=0,
             horizontal=True,
         )
-        show_road_overlay = overlay_label == t("on")
+        show_road_overlay = overlay_label == t('on')
 
     # Optional coverage map (lazy import + lazy compute)
-    with st.expander(t("graph_coverage_title"), expanded=False):
-        # If you don't have this i18n key yet, replace with "Show coverage map"
-        show_cov = st.checkbox("Show coverage map", value=False)  # TODO: i18n
+    with st.expander(t('graph_coverage_title'), expanded=False):
+        show_cov = st.checkbox('Show coverage map', value=False)  # TODO: i18n
         if show_cov:
             from routing.coverage_map import render_coverage_map
 
             subtitle = (
-                t("graph_coverage_subtitle_roi", roi=cfg.roi_name)
-                if cfg.roi_name
-                else t("graph_coverage_subtitle")
+                t('graph_coverage_subtitle_roi', roi=cfg.roi_name) if cfg.roi_name else t('graph_coverage_subtitle')
             )
 
+            data_dir_key = str(cfg.data_dir.resolve())
             render_coverage_map(
-                data_dir=str(cfg.data_dir),
+                data_dir=data_dir_key,
                 drive_prefix=cfg.drive_prefix,
                 roi_bbox_wgs84=cfg.roi_bbox_wgs84,
                 concavity_ratio=cfg.coverage_concavity_ratio,
                 clip_to_land=cfg.clip_coverage_to_land,
                 roi_name=cfg.roi_name,
-                title=t("graph_coverage_title"),
-                map_title=t("graph_coverage_map_title"),
+                title=t('graph_coverage_title'),
+                map_title=t('graph_coverage_map_title'),
                 subtitle=subtitle,
             )
 
-    default_text = ""
+    default_text = ''
     ensure_addresses_loaded(default_text=default_text, filename=cfg.store_filename)
 
-    st.header("1) Addresses")  # TODO: i18n
+    st.header('1) Addresses')  # TODO: i18n
 
     if simple_mode:
         camera_ocr_widget(
             filename=cfg.store_filename,
-            model="gpt-4.1-mini",
-            key_prefix=f"camera_ocr.{cfg.store_filename}",
+            model='gpt-4.1-mini',
+            key_prefix=f'camera_ocr.{cfg.store_filename}',
             home_address=cfg.home_address,
             overwrite=True,
             show_debug=False,
             duplicate_first_on_overwrite=False,
         )
     else:
-        with st.expander(t("camera_ocr_expander"), expanded=False):
+        with st.expander(t('camera_ocr_expander'), expanded=False):
             camera_ocr_widget(
                 filename=cfg.store_filename,
-                model="gpt-4.1-mini",
-                key_prefix=f"camera_ocr.{cfg.store_filename}",
+                model='gpt-4.1-mini',
+                key_prefix=f'camera_ocr.{cfg.store_filename}',
                 home_address=cfg.home_address,
                 overwrite=True,
                 show_debug=True,
                 duplicate_first_on_overwrite=False,
             )
 
-    addresses_text_area(label=t("addresses_label"), height=200, key="addresses_text_area")
+    addresses_text_area(label=t('addresses_label'), height=200, key='addresses_text_area')
 
-    drive_buttons_row(default_text=default_text, width="stretch", rerun_after_reload=True)
+    drive_buttons_row(default_text=default_text, width='stretch', rerun_after_reload=True)
 
     if advanced_ui:
-        drive_version_loader(default_text=default_text, width="stretch", rerun_after_load=True)
+        drive_version_loader(default_text=default_text, width='stretch', rerun_after_load=True)
 
     routing_text = get_addresses_text()
     _render_quick_preflight(cfg=cfg, routing_text=routing_text)
 
     if advanced_ui and routing_text.strip():
-        st.header("2) Clean up (optional)")  # TODO: i18n
-        with st.expander("OCR → routing reconciliation", expanded=False):  # TODO: i18n
+        st.header('2) Clean up (optional)')  # TODO: i18n
+        with st.expander('OCR → routing reconciliation', expanded=False):  # TODO: i18n
             raw_lines = _parse_addresses(routing_text)
             rows = _reconcile_addresses(raw_lines, home_address=cfg.home_address)
 
             rec_df = pd.DataFrame(
                 {
-                    "Use": [r.include for r in rows],
-                    "Captured": [r.captured for r in rows],
-                    "Final (editable)": [r.final for r in rows],
-                    "Note": [r.note for r in rows],
+                    'Use': [r.include for r in rows],
+                    'Captured': [r.captured for r in rows],
+                    'Final (editable)': [r.final for r in rows],
+                    'Note': [r.note for r in rows],
                 }
             )
 
             edited = st.data_editor(
                 rec_df,
-                use_container_width=True,
-                column_config={"Use": st.column_config.CheckboxColumn("Use")},
-                disabled=["Captured", "Note"],
+                width='stretch',
+                column_config={'Use': st.column_config.CheckboxColumn('Use')},
+                disabled=['Captured', 'Note'],
                 hide_index=True,
             )
 
             final_lines = [
                 str(a).strip()
-                for use, a in zip(edited["Use"].tolist(), edited["Final (editable)"].tolist())
+                for use, a in zip(edited['Use'].tolist(), edited['Final (editable)'].tolist())
                 if bool(use) and str(a).strip()
             ]
-            reconciled_text = "\n".join(final_lines)
+            reconciled_text = '\n'.join(final_lines)
 
             cols = st.columns([1, 1, 3])
             with cols[0]:
-                if st.button("Apply to input", use_container_width=True):  # TODO: i18n
+                if st.button('Apply to input', width='stretch'):  # TODO: i18n
                     _set_addresses_text_in_state(reconciled_text)
                     st.rerun()
             with cols[1]:
-                if st.button("Use for this run only", use_container_width=True):  # TODO: i18n
+                if st.button('Use for this run only', width='stretch'):  # TODO: i18n
                     routing_text = reconciled_text
             with cols[2]:
-                st.caption("Tip: ‘Apply’ updates the textarea so your edits persist.")  # TODO: i18n
+                st.caption("Tip: 'Apply' updates the textarea so your edits persist.")  # TODO: i18n
 
-    st.header("3) Optimize")  # TODO: i18n
-    route_type_label = st.radio(t("route_type"), [t("route_closed"), t("route_open")], index=0)
-    is_closed = route_type_label == t("route_closed")
+    st.header('3) Optimize')  # TODO: i18n
+    route_type_label = st.radio(t('route_type'), [t('route_closed'), t('route_open')], index=0)
+    is_closed = route_type_label == t('route_closed')
 
-    optimize_clicked = st.button(t("optimize"), type="primary")
+    optimize_clicked = st.button(t('optimize'), type='primary')
     if not optimize_clicked:
         return
 
     try:
         result = _compute_optimization(cfg=cfg, routing_text=routing_text, is_closed=is_closed)
     except GeocodingError as exc:
-        st.error(t("geocode_error", error=str(exc)))
+        st.error(t('geocode_error', error=str(exc)))
         return
     except ValueError as exc:
         st.error(str(exc))
         return
     except Exception as exc:
-        st.error(t("geocode_unexpected", error=str(exc)))
+        st.error(t('geocode_unexpected', error=str(exc)))
         return
 
-    st.header("4) Results")  # TODO: i18n
+    st.header('4) Results')  # TODO: i18n
     _render_validation_tables(result=result, advanced_ui=advanced_ui)
     _render_results(cfg=cfg, result=result, advanced_ui=advanced_ui, show_road_overlay=show_road_overlay)
 
 
-__all__ = ["RoutingAppConfig", "run_routing_app"]
+__all__ = ['RoutingAppConfig', 'run_routing_app']
