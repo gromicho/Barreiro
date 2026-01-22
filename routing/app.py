@@ -624,20 +624,25 @@ def _render_results(
 
 
 def _inject_mobile_fullwidth_css() -> None:
-    """Reduce Streamlit side gutters on small screens to give widgets more horizontal space."""
     st.markdown(
         """
         <style>
         @media (max-width: 768px) {
+          /* Main page gutters */
           .appview-container .main .block-container {
             max-width: 100vw !important;
             padding-left: 0.25rem !important;
             padding-right: 0.25rem !important;
           }
 
-          /* Optional: reduce vertical whitespace a bit */
-          .appview-container .main .block-container > div {
-            padding-top: 0.25rem;
+          /* Remove extra width constraints Streamlit sometimes adds */
+          .appview-container .main {
+            max-width: 100vw !important;
+          }
+
+          /* Prevent accidental centering */
+          [data-testid="stVerticalBlock"] {
+            width: 100% !important;
           }
         }
         </style>
