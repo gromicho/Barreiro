@@ -623,6 +623,29 @@ def _render_results(
             st.write(line)
 
 
+def _inject_mobile_fullwidth_css() -> None:
+    """Reduce Streamlit side gutters on small screens to give widgets more horizontal space."""
+    st.markdown(
+        """
+        <style>
+        @media (max-width: 768px) {
+          .appview-container .main .block-container {
+            max-width: 100vw !important;
+            padding-left: 0.25rem !important;
+            padding-right: 0.25rem !important;
+          }
+
+          /* Optional: reduce vertical whitespace a bit */
+          .appview-container .main .block-container > div {
+            padding-top: 0.25rem;
+          }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def run_routing_app(*, cfg: RoutingAppConfig) -> None:
     """
     Run the Streamlit routing app.
@@ -636,6 +659,9 @@ def run_routing_app(*, cfg: RoutingAppConfig) -> None:
     """
     _setup_logging(logfile=cfg.logfile)
     logging.info('Starting routing app: %s', cfg.store_filename)
+
+    # If you want: st.set_page_config(layout='wide')
+    _inject_mobile_fullwidth_css()
 
     language_selector(default_lang=None)
     st.title(t('app_title', name=cfg.title_name, city=cfg.title_city))

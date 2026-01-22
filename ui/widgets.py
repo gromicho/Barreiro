@@ -75,44 +75,19 @@ def camera_ocr_widget(
     """
     Mobile-friendly camera OCR widget.
 
-    Notes on focus:
-        `st.camera_input` delegates capture to the mobile browser's camera UI.
-        Streamlit cannot force autofocus, macro mode, or resolution via constraints here.
-        This widget can optionally provide an upload fallback (advanced mode only).
-
-    Behavior:
-        - Captures an image via `st.camera_input` (or uses cached bytes).
-        - Optionally allows uploading a photo as fallback.
-        - Shows the captured image full-width.
-        - Extracts addresses via OCR, then shows an editable preview.
-        - Applies preview text into the addresses textarea (overwrite or append).
-
-    Args:
-        filename: Store filename for persistence/debug.
-        model: OCR model identifier.
-        home_address: Optional home address (currently unused here).
-        overwrite: Whether to overwrite addresses state on apply.
-        show_debug: Whether to show debug expander with raw OCR output.
-        duplicate_first_on_overwrite: Whether to duplicate first extracted line when overwriting.
-        key_prefix: Prefix to namespace Streamlit widget keys and session keys.
-        allow_upload_fallback: If True, show the upload/drop fallback widget.
-
-    Returns:
-        True if addresses were applied to state, else False.
+    Notes:
+        - Uses st.camera_input (browser-controlled preview).
+        - Immediately hides camera after capture for better mobile UX.
+        - Shows captured image full-width.
     """
     _ = home_address
 
     def k(name: str) -> str:
-        """Build a stable namespaced key for Streamlit session/widget state."""
+        """Namespaced Streamlit key."""
         return f'{key_prefix}.{name}'
 
     def _label(key: str, fallback: str) -> str:
-        """
-        Best-effort i18n label getter.
-
-        Uses `t(key)` if available; falls back to provided string if key is missing
-        or if `t` raises for any reason.
-        """
+        """Best-effort i18n lookup."""
         try:
             val = t(key)
             if isinstance(val, str) and val.strip():
@@ -121,17 +96,23 @@ def camera_ocr_widget(
             pass
         return fallback
 
-    # Make subheader translatable even if a key is missing in some locales.
     st.subheader(_label('camera_ocr_title', 'Camera OCR'))
 
     with st.expander(_label('camera_focus_help', 'Having trouble focusing?'), expanded=False):
-        # All visible text goes through _label/t(). Use a single markdown blob so we only add one i18n key.
         st.markdown(_label('camera_focus_help_bullets', '- Tap on the text to focus/expose.\n'))
 
+    # Persist preference across runs
     if k('hide_camera_after_capture') not in st.session_state:
         st.session_state[k('hide_camera_after_capture')] = True
 
-    hide_camera_after_capture = bool(st.session_state.get(k('hide_camera_after_capture'), True))
+    hide_camera_after_capture = bool(st.session_state[k('hide_camera_after_capture')])
+
+    if show_debug:
+        st.checkbox(
+            _label('hide_camera_after_capture', 'Hide camera after capture (recommended on mobile)'),
+            key=k('hide_camera_after_capture'),
+        )
+        hide_camera_after_capture = bool(st.session_state[k('hide_camera_after_capture')])
 
     image_bytes: bytes | None = st.session_state.get(k('image_bytes'))
     mime_type: str = str(st.session_state.get(k('mime_type'), 'image/jpeg'))
@@ -143,7 +124,6 @@ def camera_ocr_widget(
             type=['jpg', 'jpeg', 'png', 'webp'],
             key=k('upload_fallback'),
         )
-
         if uploaded is not None:
             image_bytes = uploaded.getvalue()
             mime_type = uploaded.type or 'image/jpeg'
@@ -152,7 +132,11 @@ def camera_ocr_widget(
 
     photo = None
     if uploaded is None and not (hide_camera_after_capture and image_bytes):
-        photo = st.camera_input(_label('camera_ocr_take_photo', 'Take a photo'), key=k('camera_input'))
+        photo = st.camera_input(
+            _label('camera_ocr_take_photo', 'Take a photo'),
+            key=k('camera_input'),
+            width='stretch',
+        )
 
     if photo is None and image_bytes is None:
         return False
@@ -163,17 +147,25 @@ def camera_ocr_widget(
         st.session_state[k('image_bytes')] = image_bytes
         st.session_state[k('mime_type')] = mime_type
 
+        if hide_camera_after_capture:
+            st.rerun()
+            return False
+
     if image_bytes is not None:
-        # No visible strings here.
         st.image(image_bytes, width='stretch')
 
-    retake_clicked = st.button(
-        _label('retake', 'Retake photo'),
-        width='stretch',
-        key=k('retake_btn'),
-    )
-    if retake_clicked:
-        for name in ('image_bytes', 'mime_type', 'last_key', 'saved_path', 'raw', 'addresses', 'preview_text'):
+    if st.button(_label('retake', 'Retake photo'), width='stretch', key=k('retake_btn')):
+        for name in (
+            'image_bytes',
+            'mime_type',
+            'last_key',
+            'saved_path',
+            'raw',
+            'addresses',
+            'preview_text',
+            'camera_input',
+            'upload_fallback',
+        ):
             st.session_state.pop(k(name), None)
         st.rerun()
         return False
@@ -194,13 +186,11 @@ def camera_ocr_widget(
                 label='camera',
                 make_shared_link=False,
             )
-            saved_path = str(saved.get('path') or '') or None
-            st.session_state[k('saved_path')] = saved_path
+            st.session_state[k('saved_path')] = str(saved.get('path') or '') or None
         except Exception as exc:
             st.warning(t('dropbox_photo_save_failed', error=str(exc)))
             st.session_state[k('saved_path')] = None
 
-        raw: str = ''
         try:
             client = _get_openai_client()
             with st.spinner(t('ocr_extracting')):
@@ -219,12 +209,6 @@ def camera_ocr_widget(
 
         if not addresses:
             st.info(t('ocr_no_addresses'))
-            if show_debug:
-                with st.expander(t('ocr_debug')):
-                    saved_path = st.session_state.get(k('saved_path'))
-                    if saved_path:
-                        st.write(t('dropbox_path', path=saved_path))
-                    st.code(raw, language='json')
             return False
 
         lines = list(addresses)
@@ -242,13 +226,16 @@ def camera_ocr_widget(
         key=k('preview_text_area'),
     )
 
-    apply_clicked = st.button(t('apply'), width='stretch', key=k('apply_btn'))
-    cancel_clicked = st.button(t('cancel'), width='stretch', key=k('cancel_btn'))
+    if st.button(t('apply'), width='stretch', key=k('apply_btn')):
+        text = preview.strip()
+        if overwrite:
+            set_addresses_text(text)
+        else:
+            existing = get_addresses_text().strip()
+            set_addresses_text((existing + '\n' + text).strip() if existing else text)
 
-    def _clear_state() -> None:
-        """Clear widget-related session state keys."""
+        st.success(t('ocr_loaded_n', n=len([ln for ln in text.splitlines() if ln.strip()])))
         for name in (
-            'hide_camera_after_capture',
             'image_bytes',
             'mime_type',
             'last_key',
@@ -256,36 +243,37 @@ def camera_ocr_widget(
             'raw',
             'addresses',
             'preview_text',
+            'camera_input',
+            'upload_fallback',
+            'preview_text_area',
         ):
             st.session_state.pop(k(name), None)
-
-    if apply_clicked:
-        text_to_apply = preview.strip()
-        if overwrite:
-            set_addresses_text(text_to_apply)
-        else:
-            existing = get_addresses_text().strip()
-            combined = (existing + '\n' + text_to_apply).strip() if existing else text_to_apply
-            set_addresses_text(combined)
-
-        st.success(t('ocr_loaded_n', n=len([ln for ln in text_to_apply.splitlines() if ln.strip()])))
-        _clear_state()
         st.rerun()
         return True
 
-    if cancel_clicked:
-        _clear_state()
+    if st.button(t('cancel'), width='stretch', key=k('cancel_btn')):
+        for name in (
+            'image_bytes',
+            'mime_type',
+            'last_key',
+            'saved_path',
+            'raw',
+            'addresses',
+            'preview_text',
+            'camera_input',
+            'upload_fallback',
+            'preview_text_area',
+        ):
+            st.session_state.pop(k(name), None)
         st.rerun()
         return False
 
     if show_debug:
         with st.expander(t('ocr_debug')):
-            saved_path = st.session_state.get(k('saved_path'))
-            if saved_path:
-                st.write(t('dropbox_path', path=saved_path))
             st.code(str(st.session_state.get(k('raw'), '')), language='json')
 
     return False
+
 
 
 
