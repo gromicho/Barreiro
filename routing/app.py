@@ -5,6 +5,7 @@ import difflib
 import logging
 from pathlib import Path
 import re
+from urllib.parse import quote_plus
 
 import numpy as np
 import pandas as pd
@@ -499,6 +500,16 @@ def _render_validation_tables(*, result: OptimizationResult, advanced_ui: bool) 
             st.dataframe(df, width='stretch', hide_index=True)
 
 
+def _build_google_maps_url_from_latlon(*, lat: float, lon: float, zoom: int = 16) -> str:
+    """Open Google Maps at a WGS84 (lat, lon) coordinate."""
+    return f'https://www.google.com/maps/search/?api=1&query={lat:.6f},{lon:.6f}&zoom={int(zoom)}'
+
+
+def _build_google_maps_url_from_address(*, address: str) -> str:
+    """Fallback: search an address string in Google Maps."""
+    return f'https://www.google.com/maps/search/?api=1&query={quote_plus(address)}'
+
+
 def _render_results(
     *,
     cfg: RoutingAppConfig,
@@ -509,8 +520,22 @@ def _render_results(
     """Render the optimized order and optional plots/matrix/logs."""
     st.subheader(t('order_title') if advanced_ui else t('order_title_simple'))
 
-    for k, addr in enumerate(result.ordered_addresses, start=1):
-        st.write(f'{k}. {addr}')
+    # Display a "closed" route by repeating the first stop at the end.
+    display_addresses = result.ordered_addresses
+    display_indices = result.route_indices
+    if result.is_closed and result.ordered_addresses:
+        display_addresses = result.ordered_addresses + [result.ordered_addresses[0]]
+        display_indices = result.route_indices + [result.route_indices[0]]
+
+    for k, (addr, original_idx) in enumerate(zip(display_addresses, display_indices), start=1):
+        url: str
+        if 0 <= original_idx < len(result.coords):
+            lat, lon = result.coords[original_idx]  # geocoded coords are WGS84 (lat, lon)
+            url = _build_google_maps_url_from_latlon(lat=float(lat), lon=float(lon))
+        else:
+            url = _build_google_maps_url_from_address(address=addr)
+
+        st.markdown(f'{k}. [{addr}]({url})')
 
     st.markdown(
         f'**{t("total_distance_km")}**  \n'
@@ -535,62 +560,63 @@ def _render_results(
             st.dataframe(dist_df, width='stretch')
 
     with st.expander(t('maps_plots_expander'), expanded=False):
-        graph, nodes = get_drive_graph_once_per_session(data_dir=cfg.data_dir, drive_prefix=cfg.drive_prefix)
+        with timeblock('Route display', result.logs):
+            graph, nodes = get_drive_graph_once_per_session(data_dir=cfg.data_dir, drive_prefix=cfg.drive_prefix)
 
-        orig_coords = result.coords[:]
-        opt_coords = [result.coords[i] for i in result.route_indices]
+            orig_coords = result.coords[:]
+            opt_coords = [result.coords[i] for i in result.route_indices]
 
-        orig_node_ids = result.snapped_node_ids[:]
-        opt_node_ids = [result.snapped_node_ids[i] for i in result.route_indices]
+            orig_node_ids = result.snapped_node_ids[:]
+            opt_node_ids = [result.snapped_node_ids[i] for i in result.route_indices]
 
-        if result.is_closed:
-            orig_coords = list(_ensure_closed(orig_coords))  # type: ignore[assignment]
-            opt_coords = list(_ensure_closed(opt_coords))  # type: ignore[assignment]
-            orig_node_ids = list(_ensure_closed(orig_node_ids))  # type: ignore[assignment]
-            opt_node_ids = list(_ensure_closed(opt_node_ids))  # type: ignore[assignment]
+            if result.is_closed:
+                orig_coords = list(_ensure_closed(orig_coords))  # type: ignore[assignment]
+                opt_coords = list(_ensure_closed(opt_coords))  # type: ignore[assignment]
+                orig_node_ids = list(_ensure_closed(orig_node_ids))  # type: ignore[assignment]
+                opt_node_ids = list(_ensure_closed(opt_node_ids))  # type: ignore[assignment]
 
-        road_xs_orig: list[float] | None = None
-        road_ys_orig: list[float] | None = None
-        road_xs_opt: list[float] | None = None
-        road_ys_opt: list[float] | None = None
-        snapped_xs_orig: list[float] | None = None
-        snapped_ys_orig: list[float] | None = None
-        snapped_xs_opt: list[float] | None = None
-        snapped_ys_opt: list[float] | None = None
+            road_xs_orig: list[float] | None = None
+            road_ys_orig: list[float] | None = None
+            road_xs_opt: list[float] | None = None
+            road_ys_opt: list[float] | None = None
+            snapped_xs_orig: list[float] | None = None
+            snapped_ys_orig: list[float] | None = None
+            snapped_xs_opt: list[float] | None = None
+            snapped_ys_opt: list[float] | None = None
 
-        if show_road_overlay:
-            with timeblock('Building road overlay geometries', result.logs):
-                road_xs_orig, road_ys_orig = route_nodes_to_edge_geometry_xy_3857(orig_node_ids, graph, nodes)
-                road_xs_opt, road_ys_opt = route_nodes_to_edge_geometry_xy_3857(opt_node_ids, graph, nodes)
-                snapped_xs_orig, snapped_ys_orig = snapped_nodes_xy_3857(orig_node_ids, nodes)
-                snapped_xs_opt, snapped_ys_opt = snapped_nodes_xy_3857(opt_node_ids, nodes)
+            if show_road_overlay:
+                with timeblock('Building road overlay geometries', result.logs):
+                    road_xs_orig, road_ys_orig = route_nodes_to_edge_geometry_xy_3857(orig_node_ids, graph, nodes)
+                    road_xs_opt, road_ys_opt = route_nodes_to_edge_geometry_xy_3857(opt_node_ids, graph, nodes)
+                    snapped_xs_orig, snapped_ys_orig = snapped_nodes_xy_3857(orig_node_ids, nodes)
+                    snapped_xs_opt, snapped_ys_opt = snapped_nodes_xy_3857(opt_node_ids, nodes)
 
-        fig_orig = make_matplotlib_route_map(
-            orig_coords,
-            title=t('orig_order'),
-            color='blue',
-            road_xs=road_xs_orig,
-            road_ys=road_ys_orig,
-            snapped_xs=snapped_xs_orig,
-            snapped_ys=snapped_ys_orig,
-        )
-        fig_opt = make_matplotlib_route_map(
-            opt_coords,
-            title=t('opt_order'),
-            color='red',
-            road_xs=road_xs_opt,
-            road_ys=road_ys_opt,
-            snapped_xs=snapped_xs_opt,
-            snapped_ys=snapped_ys_opt,
-        )
+            fig_orig = make_matplotlib_route_map(
+                orig_coords,
+                title=f'{result.total_km_original:.2f} km',
+                color='blue',
+                road_xs=road_xs_orig,
+                road_ys=road_ys_orig,
+                snapped_xs=snapped_xs_orig,
+                snapped_ys=snapped_ys_orig,
+            )
+            fig_opt = make_matplotlib_route_map(
+                opt_coords,
+                title=f'{result.total_km_optimized:.2f} km',
+                color='red',
+                road_xs=road_xs_opt,
+                road_ys=road_ys_opt,
+                snapped_xs=snapped_xs_opt,
+                snapped_ys=snapped_ys_opt,
+            )
 
-        col_l, col_r = st.columns(2)
-        with col_l:
-            st.markdown(f'**{t("orig_order")}**')
-            st.pyplot(fig_orig, width='stretch')
-        with col_r:
-            st.markdown(f'**{t("opt_order")}**')
-            st.pyplot(fig_opt, width='stretch')
+            col_l, col_r = st.columns(2)
+            with col_l:
+                st.markdown(f'**{t("orig_order")}**')
+                st.pyplot(fig_orig, width='stretch')
+            with col_r:
+                st.markdown(f'**{t("opt_order")}**')
+                st.pyplot(fig_opt, width='stretch')
 
     with st.expander(t('timinglog_expander'), expanded=False):
         for line in result.logs:
